@@ -1,0 +1,98 @@
+PERPLEXITY: THE STRONGEST IDENTITY CHECK AVAILABLE, AND AN ABSOLUTE NUMBER
+==============================================================================
+
+  Reproduce:
+      curl -L -o models/wikitext-2-raw-v1.zip \
+        https://huggingface.co/datasets/ggml-org/ci/resolve/main/wikitext-2-raw-v1.zip
+      cd models && unzip wikitext-2-raw-v1.zip && cd ..
+      docker run --rm -v <repo>/models:/app/models:ro bitnet-t5b \
+        /app/bitnet/build/bin/llama-perplexity \
+        -m /app/models/ggml-model-i2_s.gguf \
+        -f /app/models/wikitext-2-raw/wiki.test.raw \
+        -c 512 -b 512 -t 6 --chunks 40
+
+  The corpus is llama.cpp's own CI copy of wikitext-2-raw, so the number is
+  comparable to figures published against that harness rather than to a private
+  sample.
+
+
+1. WHY THIS IS RUN AT ALL
+------------------------------------------------------------------------------
+
+  results/inference_t5b.txt argues that a quality benchmark cannot distinguish
+  the two weight formats, because their output is byte-identical and every
+  metric is therefore identical by construction. That argument is correct and it
+  is also a reason to run one: byte-identical output was established on NINE
+  prompts. Perplexity over forty 512-token chunks is 20,480 tokens, each a full
+  forward pass through thirty layers, and it compares a floating-point aggregate
+  rather than a decoded string -- which is sensitive to differences a greedy
+  decode would round away.
+
+  Nine prompts test that the argmax agrees. This tests that the logits do.
+
+
+2. THE RESULT
+------------------------------------------------------------------------------
+
+      model                        PPL
+      ggml-model-i2_s.gguf     96.8243 +/- 3.55673
+      ggml-model-t5b.gguf      96.8243 +/- 3.55673
+
+  Identical to every printed digit, and not only at the end: all forty running
+  estimates match exactly, from [1] 47.2744 through [20] 118.7272 to
+  [40] 96.8243. The two runs print the same forty numbers in the same order.
+
+  The counters confirm the arms really differed -- `kernel=upstream sgemm=0`
+  against `type=43 bits/weight=1.600 sgemm=51660` -- so this is 51,660 calls
+  through the new path producing an aggregate indistinguishable from the old.
+
+  That is the strongest correctness evidence in this repository. The suites
+  prove the kernel against a reference on random data; the nine prompts prove
+  the argmax on real text; this proves the whole logit distribution over twenty
+  thousand tokens of a corpus nobody here wrote.
+
+
+3. THE ABSOLUTE NUMBER, WHICH IS NOT FLATTERING AND IS NOT MEANT TO BE
+------------------------------------------------------------------------------
+
+  96.82 is high. Three reasons, none of them about the weight format:
+
+  - It is an INSTRUCT model measured on raw continuation text with no chat
+    template. That is the standard way to compute wikitext perplexity and it is
+    the wrong prompt shape for this model; the same measurement on a base model
+    would read lower for reasons that have nothing to do with quantisation.
+  - Forty chunks is 20,480 tokens of a 1.29 MB file. The +/- 3.55673 is the
+    harness's own estimate and it is not small.
+  - 2.41 B ternary parameters is a small model.
+
+  What it is NOT is evidence about t5b, in either direction: both formats give
+  the same figure to six significant figures.
+
+
+4. AGAINST ANOTHER MODEL, WHICH IS WHAT "WHAT LEVEL IS IT" ACTUALLY ASKS
+------------------------------------------------------------------------------
+
+  Same corpus, same 40 chunks, same context and batch, same binary:
+
+      model                                    file        PPL
+      bitnet-b1.58-2B-4T   (2.41 B ternary)   1.10 GiB   96.8243 +/- 3.55673
+      Qwen2.5-3B-Instruct  (3 B, quantised)   1.80 GiB    8.2837 +/- 0.21844
+
+  A factor of 11.7. That is the honest calibration this project did not have,
+  and it is not close.
+
+  THE COMPARISON IS INDICATIVE, NOT RIGOROUS, for one reason that matters:
+  perplexity is per TOKEN, and these two use different tokenisers -- BitNet the
+  Llama-3 128k vocabulary, Qwen2.5 its own. A model whose tokeniser packs more
+  text into each token faces a harder per-token prediction, so cross-tokeniser
+  perplexity comparisons are loose. They are not loose by a factor of eleven.
+
+  Both are instruct models measured on raw continuation text with no chat
+  template, so that handicap at least is shared.
+
+  None of this is about the weight format. It is the answer to a different
+  question -- where this model stands -- which the format work does not address
+  and which paper 6.1 listed as absent. It is absent no longer, and the answer
+  is that a 2.41 B ternary model is a long way behind a 3 B quantised one on
+  this measure.
+

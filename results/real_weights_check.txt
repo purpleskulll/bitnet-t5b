@@ -1,0 +1,337 @@
+REAL WEIGHTS: THE i2_s -> t5b REPACKING, CHECKED ON THE SHIPPED MODEL
+==========================================================================
+
+  Reproduce: python3 tools/gguf_to_t5b.py models/ggml-model-i2_s.gguf \
+                 -o models/ggml-model-t5b.gguf          # the conversion
+             python3 tools/gguf_to_t5b.py models/ggml-model-i2_s.gguf \
+                 --verify > results/real_weights_check.txt # this file
+             (section 5 reads the converted file back; run the conversion first)
+
+  model   models/ggml-model-i2_s.gguf
+          GGUF v3, 332 tensors, 210 of type i2_s, data at 8,351,360
+          1,187,801,280 bytes, sha256 of the first MiB 87e609ab0a869cf4d95f75a1c651507a
+  seed    20260905   rows per tensor 200
+  host    Linux 6.8.0-101-generic x86_64
+
+  C reference built from src/ (this repository)
+    ggml_i2s_ternary.c     sha256 2b24649bf73962e8cd73e60d81c0e284a16e2f5e2b0fe47471fe3ccf20ff434a
+    ternary_t5b.c          sha256 84bd0ff7f3a8156f35233f2997b53f747812a47c4cc6a337e3f191a502f8a39e
+(0) GEOMETRY
+    t5b_size(2560 ) python 512    C 512    agree
+    t5b_size(6912 ) python 1408   C 1408   agree
+    t5b_size(1    ) python 32     C 32     agree
+    t5b_size(159  ) python 32     C 32     agree
+    t5b_size(160  ) python 32     C 32     agree
+    t5b_size(161  ) python 64     C 64     agree
+
+(1) THE i2_s LAYOUT -- WHY THE PYTHON UNPACK IS NOT A MIRROR
+
+    The unpack in this file could agree with a wrong reading of the model and
+    prove nothing, so it is never used as the authority. The authority is
+    bitnet_vec_dot_i2_i8_s_reference in src_modifications/ggml_i2s_ternary.c,
+    which is upstream's AVX2 i2_s branch copied verbatim, compiled here and
+    called through ctypes on the model's OWN bytes. Every dot product below is
+    checked against it.
+
+    That test can fail, which is the part that matters. The same upstream
+    function has a SCALAR fallback (quants.c:107-111) that reads a different
+    layout -- weight i from byte i/4 at bit 6-2*(i%4), four CONSECUTIVE weights
+    per byte, against this file's stride-32 interleave. On AVX2 that branch
+    never runs, so nothing in ordinary use distinguishes them. Below, both
+    readings are contracted against the same activations and the same real
+    bytes, and reported side by side.
+
+    on 64 random rows of blk.0.ffn_down.weight, against the C reference:
+      stride-32 interleave (this file's reading) agrees on 64/64 rows
+      four-consecutive (the scalar fallback's reading) agrees on 0/64 rows
+
+(1b) THE CHECKS, DRIVEN RED ON PURPOSE
+
+    as expected  one flipped weight at index 1234567: the round trip reports 1 differing weight(s), at index 1234567
+    as expected  row 5 intact: t5b 1913, exact 1913
+    as expected  row 5 with packed byte 3 corrupted: t5b 1860, exact 1913
+    as expected  row 5 intact through the i2_s C reference: 1913, exact 1913
+    as expected  row 5 with i2_s byte 7 corrupted: C reference 1819, exact 1913
+    as expected  a lone code 3 at slot 0 packs byte 0 as 123 (121 if it were code 1) and moves decoded slots [0, 32] -- the carry ternary_t5b.h:159-166 documents, which is why the converter refuses code 3 rather than packing it
+
+(2) PER-TENSOR: ROUND TRIP AND DOT PRODUCTS
+
+  blk.0.ffn_down.weight   dims [6912, 2560]  = 17,694,720 weights  K=6912 rows=2560
+    codes         0:5,465,436 (30.8874%)  1:6,761,794 (38.2136%)  2:5,467,490 (30.8990%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  2.163161
+    pack vs C     all 2,560 rows byte-identical to ternary_t5b_pack (3,604,480 bytes)
+    round trip    exact on all 17,694,720 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  0/200   (200 differ; 200/200 of the differences are a multiple of 65536, i.e. upstream's int16 accumulator wrapping)
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  0/200   (200 differ; 200/200 of the differences are a multiple of 65536, i.e. upstream's int16 accumulator wrapping)
+
+  blk.0.attn_q.weight   dims [2560, 2560]  = 6,553,600 weights  K=2560 rows=2560
+    codes         0:1,649,645 (25.1716%)  1:3,251,715 (49.6172%)  2:1,652,240 (25.2112%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  1.218855
+    pack vs C     all 2,560 rows byte-identical to ternary_t5b_pack (1,310,720 bytes)
+    round trip    exact on all 6,553,600 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+
+  blk.7.ffn_gate.weight   dims [2560, 6912]  = 17,694,720 weights  K=2560 rows=6912
+    codes         0:5,198,890 (29.3810%)  1:7,287,878 (41.1867%)  2:5,207,952 (29.4322%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  1.921571
+    pack vs C     all 6,912 rows byte-identical to ternary_t5b_pack (3,538,944 bytes)
+    round trip    exact on all 17,694,720 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+
+  blk.14.attn_k.weight   dims [2560, 640]  = 1,638,400 weights  K=2560 rows=640
+    codes         0:419,494 (25.6039%)  1:801,100 (48.8953%)  2:417,806 (25.5009%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  3.034633
+    pack vs C     all 640 rows byte-identical to ternary_t5b_pack (327,680 bytes)
+    round trip    exact on all 1,638,400 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+
+  blk.21.ffn_down.weight   dims [6912, 2560]  = 17,694,720 weights  K=6912 rows=2560
+    codes         0:5,343,057 (30.1958%)  1:7,006,483 (39.5965%)  2:5,345,180 (30.2078%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  2.823519
+    pack vs C     all 2,560 rows byte-identical to ternary_t5b_pack (3,604,480 bytes)
+    round trip    exact on all 17,694,720 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  0/200   (200 differ; 200/200 of the differences are a multiple of 65536, i.e. upstream's int16 accumulator wrapping)
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  0/200   (200 differ; 200/200 of the differences are a multiple of 65536, i.e. upstream's int16 accumulator wrapping)
+
+  blk.29.ffn_up.weight   dims [2560, 6912]  = 17,694,720 weights  K=2560 rows=6912
+    codes         0:5,276,988 (29.8224%)  1:7,145,603 (40.3827%)  2:5,272,129 (29.7949%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  2.602971
+    pack vs C     all 6,912 rows byte-identical to ternary_t5b_pack (3,538,944 bytes)
+    round trip    exact on all 17,694,720 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+
+  blk.29.attn_v.weight   dims [2560, 640]  = 1,638,400 weights  K=2560 rows=640
+    codes         0:456,148 (27.8411%)  1:727,020 (44.3738%)  2:455,232 (27.7852%)  3:0 (0.0000%)
+    scale (f32 at ne0*ne1/4)  1.776820
+    pack vs C     all 640 rows byte-identical to ternary_t5b_pack (327,680 bytes)
+    round trip    exact on all 1,638,400 weights
+    unpack vs C   2000/2000 sampled weights agree with ternary_t5b_unpack_at
+    dot [random int8 in [-127,127]] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all +127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+    dot [all -127] over 200 rows:
+      t5b AVX2   == exact int64  200/200
+      t5b scalar == exact int64  200/200
+      i2_s C ref == exact int64  200/200
+
+(2b) WHERE i2_s AND t5b DISAGREE, AND WHICH ONE IS WRONG
+
+    Every disagreement above is upstream's, and it is an int16 overflow in the
+    shipped kernel rather than anything about t5b.
+
+    bitnet_vec_dot_i2_i8_s_reference accumulates 32 BLOCKS into an int16
+    accumulator before folding to int32 (ggml_i2s_ternary.c:100-129, `accu32`).
+    One int16 lane takes 2 products per vpmaddubsw and 4 vpmaddubsw per block,
+    so 256 products per lane per group. With every activation at +127 and the
+    measured code mean of 1.000,
+
+        256 * 1.000 * 127 = 32512    against the int16 ceiling of 32767
+
+    -- 0.78 % of headroom, which the row-to-row spread crosses. That bound
+    makes a SHARP, falsifiable prediction: the 32-block group only exists when
+    nb = K/128 >= 32, i.e. K >= 4096, so K = 6912 must wrap and K = 2560
+    (nb = 20, max 20320 per lane) must not. The measurement is exactly that
+    split -- 200/200 rows wrong at K = 6912 on both extremes, 0/1200 wrong at
+    K = 2560 -- and every single error is a whole multiple of 65536, which is
+    what an int16 lane wrapping looks like and what a mis-decoded weight does
+    not.
+
+    t5b is exact in all three cases because ternary_t5b.h derives its own
+    bound and folds at 12 blocks: 12 * 2560 = 30720 <= 32767, and 13 would not
+    fit. The margin is designed there and inherited here.
+
+    THIS IS NOT A DEFECT ANYONE MEETS IN PRODUCTION. Real activations are not
+    all +127; on random int8 the reference is exact on every one of the 1400
+    rows tried, which is why the two kernels agree everywhere it matters. It is
+    recorded because a differential check is only worth running if it CAN
+    separate the two implementations, and this one did -- against the one that
+    ships.
+
+    First disagreement per tensor and case:
+
+      blk.0.ffn_down.weight      K=6912  [all +127] row 1978: exact      -12,065  ref     -405,281  diff     -393,216 =    -6 * 65536
+      blk.0.ffn_down.weight      K=6912  [all -127] row 1978: exact       12,065  ref      405,281  diff      393,216 =     6 * 65536
+      blk.21.ffn_down.weight     K=6912  [all +127] row 824: exact      -36,322  ref     -167,394  diff     -131,072 =    -2 * 65536
+      blk.21.ffn_down.weight     K=6912  [all -127] row 824: exact       36,322  ref      167,394  diff      131,072 =     2 * 65536
+
+(3) CODE 3 ACROSS ALL 210 i2_s TENSORS
+
+    The correction identity sum(code*y) = sum(w*y) + sum(y) needs code 3 to be
+    absent, and t5b needs it too: a code 3 does not corrupt only its own
+    weight, it carries into the next digit plane (see 1b). It had only ever
+    been checked on blk.0.ffn_down.weight. Every i2_s byte in the model is read
+    here -- histogrammed over the 256 byte values, then folded, so it is a full
+    sweep and not a sample.
+
+    The bytes are in hand at that point, so the ROUND TRIP is done here too,
+    for every tensor and every weight, rather than inferred from the seven in
+    (2): unpack the real i2_s codes, pack to t5b, unpack again, require every
+    weight back. Four random rows per tensor are additionally packed by the C
+    ternary_t5b_pack and required to be byte-identical, so the C authority is
+    in the loop on all of them and not only on the seven.
+
+    210 tensors, 2,084,044,800 weights, 30.3s
+      code 0 ->     602,163,685   28.8940%
+      code 1 ->     879,693,294   42.2109%
+      code 2 ->     602,187,821   28.8951%
+      code 3 ->               0    0.0000%
+
+    code 3 count is 0 over all 2,084,044,800 weights of all 210 tensors.
+    The identity holds model-wide, not just on blk.0.ffn_down.weight.
+
+    round trip exact on all 2,084,044,800 weights of all 210 tensors -- every weight in the model, not a sample.
+    840 sampled rows across the 210 tensors are byte-identical to ternary_t5b_pack.
+
+(4) BYTES BEFORE AND AFTER
+
+source        : models/ggml-model-i2_s.gguf  (1,187,801,280 bytes)
+GGUF v3, 332 tensors, data starts at 8,351,360
+alignment     : 32  (absent from the KV block -- the GGUF spec default of 32 applies)
+i2_s tensors  : 210 of 332
+
+PER-K ARITHMETIC
+  K      blocks  bytes/row  i2_s bytes/row   bits/weight  ratio
+  2560   16      512        640              1.60000      0.80000
+  6912   44      1408       1728             1.62963      0.81481
+
+PER-SHAPE TOTALS
+  (2560, 640)      x60   i2_s    24,577,920 -> t5b    19,662,720   0.80002
+  (2560, 2560)     x60   i2_s    98,305,920 -> t5b    78,645,120   0.80000
+  (2560, 6912)     x60   i2_s   265,422,720 -> t5b   212,338,560   0.80000
+  (6912, 2560)     x30   i2_s   132,711,360 -> t5b   108,135,360   0.81482
+  TOTAL i2_s                    521,017,920 ->       418,781,760   0.80378
+
+ternary weights            : 2,084,044,800
+i2_s  bits/weight, codes   : 2.00000   (521,011,200 bytes)
+t5b   bits/weight, codes   : 1.60755   (418,775,040 bytes)
+  nominal 1.6 would be     : 1.60000   (416,808,960 bytes)
+  tail waste at K=6912     : 9,830,400 padded slots (1,966,080 bytes, +0.00755 bits/weight)
+  the 32-byte scale tails  : 6,720 bytes (+0.00003 bits/weight)
+i2_s  bits/weight, all in  : 2.00003
+t5b   bits/weight, all in  : 1.60757
+file  : 1,187,801,280 -> 1,085,565,120 bytes  (0.91393, 102.2 MB saved)
+        the f16 embedding is 656,670,720 bytes -- 55.7 % of the tensor data, 55.3 % of the file -- and does not change; the whole saving comes out of the 521,011,200 bytes of codes
+
+(5) THE CONVERTED FILE ON DISK
+
+    models/ggml-model-t5b.gguf  1,085,565,120 bytes
+    GGUF v3, 332 tensors, 210 of type 43 (T5B), 0 still i2_s, data at 8,351,360
+
+    The checks in (2) verified a packing held in memory. This reads the bytes
+    back off the disk and requires them to be that packing -- an ack from the
+    writer is not evidence that the file has them.
+
+    blk.0.ffn_down.weight       3,604,480 code bytes identical, 32-byte scale tail identical to the source
+    blk.0.attn_q.weight         1,310,720 code bytes identical, 32-byte scale tail identical to the source
+    blk.7.ffn_gate.weight       3,538,944 code bytes identical, 32-byte scale tail identical to the source
+    blk.14.attn_k.weight          327,680 code bytes identical, 32-byte scale tail identical to the source
+    blk.21.ffn_down.weight      3,604,480 code bytes identical, 32-byte scale tail identical to the source
+    blk.29.ffn_up.weight        3,538,944 code bytes identical, 32-byte scale tail identical to the source
+    blk.29.attn_v.weight          327,680 code bytes identical, 32-byte scale tail identical to the source
+    token_embd.weight          f16, 656,670,720 bytes, type 1 unchanged; first and last 8 MiB identical
+
+VERDICT
+  Round trip, i2_s -> ternary -> t5b -> ternary: EXACT on all 2,084,044,800 weights
+  of all 210 i2_s tensors -- every ternary weight in the model, not a sample.
+  Code 3: 0 occurrences in those 2,084,044,800 weights.
+  Packing: 22,784 rows on 7 tensors plus 840 sampled rows across all
+  210 are byte-identical to the C ternary_t5b_pack.
+  Dot product: on 7 tensors (80,609,280 weights), t5b matched exact int64
+  arithmetic on all 4,200 row-and-activation cases; upstream's i2_s kernel did
+  not, on 800 of them, for the reason in (2b).
+  Size: 2.00000 -> 1.60755 bits per weight over the codes, 102,236,160 bytes off the file.
+  Every check above passed.
+
+NOT CHECKED
+    DOT PRODUCTS were measured on the 7 tensors named in (2) and not on the
+    other 203. The round trip and the code histogram cover all 210 (see 3);
+    the dot product does not. Its correctness on the rest rests on the layout
+    being the same one -- which (3) checks -- and on the kernel, which does not
+    read the tensor's identity. That is an inference, and it is named here as one.
+
+    READ-BACK from the converted file (5) covers the same 7 tensors plus the
+    embedding, not all 332. What covers every tensor there is the reread in
+    the converter itself: dims, type and offset of all 332, alignment included.
+
+    NO INFERENCE-TIME CHECK AT ALL: nothing here runs the converted model. That the
+    weights survive the repacking is not evidence that a model reading them
+    produces the same tokens, and it cannot be until a loader knows type 43.
+    No perplexity, no generated text, no end-to-end number is claimed here.
+
+    NO TIMING. This file is about exactness and size. Whether t5b is FASTER than
+    i2_s on this model is a separate question and is not touched.

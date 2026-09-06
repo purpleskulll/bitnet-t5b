@@ -1,0 +1,662 @@
+TENSOR STRUCTURE -- how many bits a ternary weight really needs,
+measured on the shipped weights
+===========================================================================
+  Reproduce: python3 tools/tensor_structure.py
+
+  Model  : ggml-model-i2_s.gguf, microsoft/bitnet-b1.58-2B-4T-gguf
+           bitnet-b1.58, GGUF v3, 332 tensors, data at 8351360
+  Method : GGUF tensor table parsed with tools/gguf_inspect.py; codes read from
+           the file. No inference run, nothing sampled.
+  Layout : an i2_s tensor is exactly nelem/4 code bytes; the gap to the next
+           tensor is [32] bytes for every i2_s tensor (one f32 scale +
+           GGUF alignment), so no scale byte is ever counted as a weight.
+
+  Question. i2_s spends 2.00 bits/weight. log2(3) = 1.585 is the order-0 floor
+  for three symbols and a dense base-3 pack reaches 1.600. Is there structure
+  -- neighbour correlation, zero clustering, per-block skew -- worth a more
+  complicated decoder? Every number below is counted over bytes read from the
+  GGUF in full. Nothing is sampled or extrapolated.
+
+  Codes: 0 -> w=-1, 1 -> w=0, 2 -> w=+1, 3 -> unused. "Nonzero" = code != 1.
+
+  Two orders are reported because i2_s is interleaved: a 32-byte block holds
+  128 weights, byte j carrying weights j, 32+j, 64+j, 96+j (bits 7-6, 5-4,
+  3-2, 1-0). Confirmed against the verbatim upstream AVX2 kernel in
+  src_modifications/ggml_i2s_ternary.c, where the >>6/>>4/>>2/>>0 lanes are
+  paired with activations py+0/+32/+64/+96 while px advances 32 bytes per 128
+  activations. "Storage order" is the byte stream; "row-major" is logical
+  weight order with row-straddling pairs excluded.
+
+  The estimator was made to fail on purpose before any null was believed:
+  on synthetic i.i.d. symbols H0-H1 = 0.00000 (must be 0), and with half
+  the symbols copying their predecessor H0-H1 = 0.08465 (must be large).
+  Run as --self-test; both are asserted on every run.
+
+1. TENSORS MEASURED
+---------------------------------------------------------------------------
+  All 210 i2_s tensors of the model were measured in full: 2,084,044,800 weights.
+  The ten below are reported tensor by tensor; every one of the 210 is
+  in the model-wide figures and in the appendix.
+
+  tensor                                 dims       weights   bytes read
+  blk.0.ffn_down.weight          [6912, 2560]    17,694,720    4,423,680
+  blk.0.attn_q.weight            [2560, 2560]     6,553,600    1,638,400
+  blk.4.attn_v.weight             [2560, 640]     1,638,400      409,600
+  blk.7.ffn_gate.weight          [2560, 6912]    17,694,720    4,423,680
+  blk.14.ffn_up.weight           [2560, 6912]    17,694,720    4,423,680
+  blk.14.attn_k.weight            [2560, 640]     1,638,400      409,600
+  blk.21.attn_output.weight      [2560, 2560]     6,553,600    1,638,400
+  blk.25.ffn_down.weight         [6912, 2560]    17,694,720    4,423,680
+  blk.29.ffn_gate.weight         [2560, 6912]    17,694,720    4,423,680
+  blk.29.attn_q.weight           [2560, 2560]     6,553,600    1,638,400
+  subtotal (detail)                             111,411,200
+
+  10 detailed tensors, 7 distinct layers (0, 4, 7, 14, 21, 25, 29),
+  4 distinct shapes, all 7 projection kinds.
+
+
+2. MARGINAL DISTRIBUTION AND ORDER-0 ENTROPY  (question 1)
+---------------------------------------------------------------------------
+  tensor                          code 0    code 1    code 2   code 3   H0 bits
+  blk.0.ffn_down.weight         30.887%  38.214%  30.899%        0    1.5774
+  blk.0.attn_q.weight           25.172%  49.617%  25.211%        0    1.5038
+  blk.4.attn_v.weight           31.918%  36.106%  31.976%        0    1.5825
+  blk.7.ffn_gate.weight         29.381%  41.187%  29.432%        0    1.5656
+  blk.14.ffn_up.weight          29.851%  40.296%  29.853%        0    1.5697
+  blk.14.attn_k.weight          25.604%  48.895%  25.501%        0    1.5107
+  blk.21.attn_output.weight     28.849%  42.312%  28.840%        0    1.5598
+  blk.25.ffn_down.weight        30.625%  38.725%  30.650%        0    1.5758
+  blk.29.ffn_gate.weight        29.318%  41.299%  29.383%        0    1.5651
+  blk.29.attn_q.weight          29.000%  42.009%  28.991%        0    1.5614
+
+  The 30.887 / 38.214 / 30.899 figure previously measured on
+  blk.0.ffn_down.weight is CONFIRMED on that tensor and REFUTED as a
+  model-wide constant. Over all 210 i2_s tensors H0 spans
+    1.3697 bits  (blk.1.ffn_gate.weight, zero share 60.080%)
+    1.5825 bits  (blk.4.attn_v.weight, zero share 36.106%)
+  Zero (code 1) share ranges 36.106% .. 60.080%; log2(3) = 1.5850.
+  Symmetry between -1 and +1 holds everywhere: the two counts differ by
+  at most 0.3352% of the tensor.
+
+
+3. CODE 3  (question 2)
+---------------------------------------------------------------------------
+  Swept EVERY i2_s tensor in the file, independently of the pass above:
+    tensors        210
+    weights        2,084,044,800
+    code 0             602,163,685   28.8940%
+    code 1             879,693,294   42.2109%
+    code 2             602,187,821   28.8951%
+    code 3                       0    0.0000%
+
+  code 3 count = 0 exactly. Not 'approximately zero' and not an
+  impression: zero occurrences in 2,084,044,800 weights. The
+  {0,1,2} encoding is exact and base-3 packing is lossless here.
+
+  Whole-model H0 under one global table = 1.5603 bits/weight.
+
+
+4. ORDER-1 CONDITIONAL ENTROPY  (question 3)
+---------------------------------------------------------------------------
+  H(w_i | w_i-1). Below H0 would mean the weights are correlated and a
+  context-dependent code would beat the order-0 floor.
+
+  tensor                             H0   H1 stor   H1 stor    H1 row    H1 col
+                                              msb       lsb     major       umn
+  blk.0.ffn_down.weight          1.5774    1.5774    1.5774    1.5774    1.5719
+  blk.0.attn_q.weight            1.5038    1.4809    1.4809    1.4811    1.4763
+  blk.4.attn_v.weight            1.5825    1.5824    1.5824    1.5824    1.5818
+  blk.7.ffn_gate.weight          1.5656    1.5639    1.5639    1.5639    1.5656
+  blk.14.ffn_up.weight           1.5697    1.5696    1.5696    1.5696    1.5697
+  blk.14.attn_k.weight           1.5107    1.4941    1.4942    1.4944    1.4948
+  blk.21.attn_output.weight      1.5598    1.5570    1.5569    1.5570    1.5570
+  blk.25.ffn_down.weight         1.5758    1.5757    1.5757    1.5757    1.5752
+  blk.29.ffn_gate.weight         1.5651    1.5621    1.5621    1.5621    1.5650
+  blk.29.attn_q.weight           1.5614    1.5612    1.5612    1.5612    1.5611
+
+  Over all 210 tensors, row-major H0 - H1:
+    weighted mean 0.00694 bits/weight  (0.434% of a 1.600-bit budget)
+    largest       0.19866 bits/weight  (blk.1.ffn_up.weight)
+  For scale, the estimator resolved an injected correlation of 0.0846 bits.
+
+  The largest drops are NOT weight correlation. Every one of them is on
+  a tensor with dead rows (section 5), and a dead row is a run of
+  thousands of identical symbols, which any order-1 model predicts for
+  free. Re-measured over the LIVE rows only:
+
+    tensor                         H0 all   H1 all     drop  H0 live  H1 live     drop
+    blk.1.ffn_up.weight            1.3711   1.1725  0.19866   1.5789   1.5789  0.00001
+    blk.1.ffn_gate.weight          1.3697   1.1729  0.19681   1.5794   1.5794  0.00001
+    blk.2.ffn_gate.weight          1.4850   1.3890  0.09594   1.5849   1.5849  0.00000
+    blk.2.ffn_up.weight            1.4844   1.3886  0.09579   1.5849   1.5849  0.00001
+    blk.3.ffn_gate.weight          1.5406   1.5085  0.03208   1.5830   1.5830  0.00000
+    blk.3.ffn_up.weight            1.5398   1.5077  0.03208   1.5828   1.5828  0.00000
+
+  Over the 2,033,236,480 weights in live rows, model-wide:
+    weighted mean H0 - H1 = 0.00076 bits/weight
+    largest on any tensor = 0.03058 (blk.0.attn_output.weight)
+    weighted mean H0      = 1.5633, against log2(3) = 1.5850
+
+  Once the dead rows are set aside the order-1 gain collapses from 0.00694
+  to 0.00076 bits/weight model-wide (0.047% of a 1.600-bit budget), and to at
+  most 0.03058 on any single tensor (1.91%) -- that residual is the
+  spread of per-row density in section 5, not a weight-to-weight
+  relationship. It is small enough that a context model cannot repay a
+  decoder either way. The structure in this model is WHICH ROWS ARE DEAD;
+  almost none of it is in the relationship between one weight and the next.
+
+  Joint table, row-major, blk.0.ffn_down.weight (rows = w_i-1,
+  cols = w_i, share of all pairs), against the product of its margins:
+
+                    w=-1         w=0        w=+1
+    w=-1   obs    9.56858%   11.74588%    9.57289%
+           exp    9.54028%   11.80324%    9.54383%
+    w=0    obs   11.74319%   14.72655%   11.74408%
+           exp   11.80324%   14.60296%   11.80762%
+    w=+1   obs    9.57530%   11.74152%    9.58200%
+           exp    9.54383%   11.80762%    9.54738%
+
+
+5. BLOCK STRUCTURE -- NONZEROS PER BLOCK  (question 4)
+---------------------------------------------------------------------------
+  Row-major order. 'binomial' is the all-zero fraction that independent
+  weights at this tensor's own zero rate would give -- the yardstick for
+  whether zeros CLUSTER. 'sd/binom' is the observed standard deviation
+  of the nonzero count over the binomial one: 1.0 means no block skew.
+
+  block = 16 weights
+    tensor                            blocks  mean nz    all-zero    binomial     <=2 nz  sd/binom
+    blk.0.ffn_down.weight          1,105,920    9.886   0.000e+00   2.068e-07  7.324e-05      1.04
+    blk.0.attn_q.weight              409,600    8.061   3.535e-02   1.349e-05  1.065e-01      1.91
+    blk.4.attn_v.weight              102,400   10.223   0.000e+00   8.342e-08  8.789e-05      1.05
+    blk.7.ffn_gate.weight          1,105,920    9.410   3.140e-02   6.857e-07  3.154e-02      1.31
+    blk.14.ffn_up.weight           1,105,920    9.553   3.617e-03   4.833e-07  3.784e-03      1.07
+    blk.14.attn_k.weight             102,400    8.177   6.650e-03   1.067e-05  7.453e-02      1.80
+    blk.21.attn_output.weight        409,600    9.230   1.703e-02   1.055e-06  4.328e-02      1.40
+    blk.25.ffn_down.weight         1,105,920    9.804   0.000e+00   2.558e-07  8.048e-05      1.02
+    blk.29.ffn_gate.weight         1,105,920    9.392   3.183e-02   7.162e-07  3.240e-02      1.40
+    blk.29.attn_q.weight             409,600    9.279   2.686e-05   9.407e-07  1.543e-03      1.12
+
+  block = 32 weights
+    tensor                            blocks  mean nz    all-zero    binomial     <=2 nz  sd/binom
+    blk.0.ffn_down.weight            552,960   19.772   0.000e+00   4.275e-14  0.000e+00      1.08
+    blk.0.attn_q.weight              204,800   16.122   1.979e-02   1.821e-10  5.249e-02      2.55
+    blk.4.attn_v.weight               51,200   20.446   0.000e+00   6.959e-15  0.000e+00      1.10
+    blk.7.ffn_gate.weight            552,960   18.820   3.139e-02   4.702e-13  3.139e-02      1.58
+    blk.14.ffn_up.weight             552,960   19.105   3.617e-03   2.336e-13  3.617e-03      1.13
+    blk.14.attn_k.weight              51,200   16.354   7.422e-04   1.139e-10  9.258e-03      2.38
+    blk.21.attn_output.weight        204,800   18.460   7.578e-03   1.114e-12  3.004e-02      1.72
+    blk.25.ffn_down.weight           552,960   19.608   0.000e+00   6.542e-14  0.000e+00      1.03
+    blk.29.ffn_gate.weight           552,960   18.784   3.183e-02   5.130e-13  3.183e-02      1.73
+    blk.29.attn_q.weight             204,800   18.557   0.000e+00   8.849e-13  4.883e-06      1.23
+
+  block = 128 weights
+    tensor                            blocks  mean nz    all-zero    binomial     <=2 nz  sd/binom
+    blk.0.ffn_down.weight            138,240   79.087   0.000e+00   3.341e-54  0.000e+00      1.30
+    blk.0.attn_q.weight               51,200   64.490   4.668e-03   1.099e-39  1.605e-02      4.85
+    blk.4.attn_v.weight               12,800   81.784   0.000e+00   2.346e-57  0.000e+00      1.38
+    blk.7.ffn_gate.weight            138,240   75.281   3.139e-02   4.886e-50  3.139e-02      2.68
+    blk.14.ffn_up.weight             138,240   76.421   3.617e-03   2.979e-51  3.617e-03      1.46
+    blk.14.attn_k.weight              12,800   65.414   0.000e+00   1.683e-40  0.000e+00      4.48
+    blk.21.attn_output.weight         51,200   73.841   1.563e-04   1.537e-48  1.973e-03      3.00
+    blk.25.ffn_down.weight           138,240   78.432   0.000e+00   1.832e-53  0.000e+00      1.13
+    blk.29.ffn_gate.weight           138,240   75.137   3.183e-02   6.926e-50  3.183e-02      3.03
+    blk.29.attn_q.weight              51,200   74.229   0.000e+00   6.131e-49  0.000e+00      1.76
+
+  block = 160 weights
+    tensor                            blocks  mean nz    all-zero    binomial     <=2 nz  sd/binom
+    blk.0.ffn_down.weight            110,592   98.858   0.000e+00   1.429e-67  0.000e+00      1.37
+    blk.0.attn_q.weight               40,960   80.612   3.540e-03   2.001e-49  1.277e-02      5.40
+    blk.4.attn_v.weight               10,240  102.230   0.000e+00   1.632e-71  0.000e+00      1.45
+    blk.7.ffn_gate.weight            110,592   94.101   3.139e-02   2.297e-62  3.139e-02      2.95
+    blk.14.ffn_up.weight             110,592   95.526   3.617e-03   6.959e-64  3.617e-03      1.55
+    blk.14.attn_k.weight              10,240   81.768   0.000e+00   1.917e-50  0.000e+00      4.98
+    blk.21.attn_output.weight         40,960   92.301   0.000e+00   1.712e-60  0.000e+00      2.45
+    blk.25.ffn_down.weight           110,592   98.040   0.000e+00   1.198e-66  0.000e+00      1.16
+    blk.29.ffn_gate.weight           110,592   93.921   3.183e-02   3.553e-62  3.183e-02      3.35
+    blk.29.attn_q.weight              40,960   92.786   0.000e+00   5.425e-61  0.000e+00      1.90
+
+  Two things in that table are not noise.
+
+  (i) ZEROS CLUSTER, BY MANY ORDERS OF MAGNITUDE. All-zero 128-blocks
+      occur where independence predicts 1e-39 to 1e-57. The cause is
+      whole DEAD ROWS -- output neurons whose entire weight vector is
+      zero -- not a local run:
+
+        tensors with >=1 entirely-zero row : 64 of 210
+        entirely-zero rows, whole model    : 19,847 of 683,520 (2.9036%)
+        worst offenders:
+          blk.1.ffn_gate.weight         3013 /  6912 rows  = 43.5909% of its weights
+          blk.1.ffn_up.weight           3013 /  6912 rows  = 43.5909% of its weights
+          blk.2.ffn_gate.weight         1906 /  6912 rows  = 27.5752% of its weights
+          blk.2.ffn_up.weight           1906 /  6912 rows  = 27.5752% of its weights
+          blk.3.ffn_gate.weight         1021 /  6912 rows  = 14.7714% of its weights
+          blk.3.ffn_up.weight           1021 /  6912 rows  = 14.7714% of its weights
+
+      This is why the all-zero fraction is IDENTICAL at B=16 and
+      B=160 for those tensors: the zero regions are thousands of
+      weights long, so every block size lands inside them equally.
+
+      Those dead rows are whole FFN NEURONS, and they are dead in
+      all three matrices at once. A neuron is a row of ffn_gate and
+      ffn_up but a COLUMN of ffn_down, so the three were matched up
+      rather than assumed to correspond:
+
+         layer  gate rows  up rows  down cols  all three     of
+             0        330      330        333        330   6912
+             1       3013     3013       3016       3013   6912
+             2       1906     1906       1917       1906   6912
+             3       1021     1021       1029       1021   6912
+             4        616      616        626        616   6912
+             5        307      307        324        307   6912
+             6        189      189        204        189   6912
+             7        217      217        224        217   6912
+             8        140      140        149        140   6912
+             9         67       67         78         67   6912
+            10         22       22         23         22   6912
+            11         38       38         40         38   6912
+            12         33       33         33         33   6912
+            13         35       35         37         35   6912
+            14         25       25         27         25   6912
+            15         35       35         36         35   6912
+            16         64       64         64         64   6912
+            17        106      106        107        106   6912
+            18        149      149        150        149   6912
+            19        204      204        206        204   6912
+            20        206      206        207        206   6912
+            21        148      148        148        148   6912
+            22         74       74         76         74   6912
+            23         71       71         72         71   6912
+            24         99       99         99         99   6912
+            25         91       91         92         91   6912
+            26        117      117        119        117   6912
+            27        182      182        184        182   6912
+            28        145      145        154        145   6912
+            29        220      220        244        220   6912
+
+        9,870 of 207,360 FFN neurons (4.76%) are dead in
+        gate, up AND down together -- removable outright, not merely
+        compressible. They are concentrated in the early layers.
+
+  (ii) BLOCK DENSITY IS SKEWED, AND IT IS A PROPERTY OF THE ROW.
+      Observed sd of the nonzero count over the binomial sd, B=32:
+        range 1.03 (blk.21.ffn_down.weight) .. 4.12 (blk.1.ffn_up.weight)
+      Blocks are NOT independent draws. Per-row nonzero density:
+
+        tensor                            min   median      max       sd
+        blk.0.ffn_down.weight          0.5621   0.6099   0.9408   0.0367
+        blk.0.attn_q.weight            0.0012   0.5758   0.8270   0.2108
+        blk.4.attn_v.weight            0.3926   0.6391   0.9996   0.0419
+        blk.7.ffn_gate.weight          0.0000   0.6074   0.7219   0.1089
+        blk.14.ffn_up.weight           0.0000   0.5973   0.7305   0.0473
+        blk.14.attn_k.weight           0.0684   0.5910   0.8254   0.1938
+        blk.21.attn_output.weight      0.3832   0.5762   1.0000   0.0314
+        blk.25.ffn_down.weight         0.4427   0.6136   0.8970   0.0234
+        blk.29.ffn_gate.weight         0.0000   0.5965   0.7824   0.1252
+        blk.29.attn_q.weight           0.2863   0.5949   0.7238   0.0641
+
+      In blk.0.attn_q.weight one row is 0.12% nonzero and another is
+      82.7% nonzero. The sparsity lives per output neuron, not per
+      model. That is the structure worth coding against -- and it is
+      captured by a per-row probability table, not by a skip flag.
+
+
+6. BITS PER WEIGHT UNDER EACH SCHEME  (question 5)
+---------------------------------------------------------------------------
+  (a) dense base-3, 10 trits per uint16 (3^10 = 59049 <= 65536)
+  (b) per-block zero skipping, 1 flag bit per block, non-skipped blocks
+      at the base-3 rate; the best block size for each tensor is shown
+  (c) order-0 arithmetic coding at the tensor's own measured entropy
+  (d) EXTRA: per-block enumerative coding (count + placement + signs)
+  (e) EXTRA: order-0 arithmetic coding with one table PER ROW, side
+      info charged at 3 x 32 bits per row
+  (f) EXTRA: dense base-3 plus a 1-bit skip flag per ROW -- the scheme
+      the dead-row finding actually points at, with no entropy coder
+
+  tensor                        (a) base3  (b) skip  (c) ari0  (d) enum   (e) row  (f) rskip   i2_s
+  blk.0.ffn_down.weight            1.6000    1.6062    1.5774    1.5751    1.5866     1.6001  2.000
+  blk.0.attn_q.weight              1.6000    1.5991    1.5038    1.3774    1.3995     1.6004  2.000
+  blk.4.attn_v.weight              1.6000    1.6062    1.5825    1.5774    1.6124     1.6004  2.000
+  blk.7.ffn_gate.weight            1.6000    1.5560    1.5656    1.5254    1.5596     1.5502  2.000
+  blk.14.ffn_up.weight             1.6000    1.6005    1.5697    1.5646    1.5993     1.5946  2.000
+  blk.14.attn_k.weight             1.6000    1.6062    1.5107    1.4102    1.4336     1.6004  2.000
+  blk.21.attn_output.weight        1.6000    1.6062    1.5598    1.5148    1.5932     1.6004  2.000
+  blk.25.ffn_down.weight           1.6000    1.6062    1.5758    1.5747    1.5877     1.6001  2.000
+  blk.29.ffn_gate.weight           1.6000    1.5553    1.5651    1.5176    1.5473     1.5495  2.000
+  blk.29.attn_q.weight             1.6000    1.6062    1.5614    1.5550    1.5865     1.6004  2.000
+
+  (b) zero-skip, non-skipped blocks at 1.600, bits/weight by block size:
+
+    tensor                            B=4      B=8     B=16     B=32     B=64    B=128    B=160
+    blk.0.ffn_down.weight          1.8146   1.7242   1.6625   1.6313   1.6156   1.6078   1.6062
+    blk.0.attn_q.weight            1.6214   1.6152   1.6059   1.5996   1.5991   1.6003   1.6006
+    blk.4.attn_v.weight            1.8210   1.7244   1.6625   1.6313   1.6156   1.6078   1.6062
+    blk.7.ffn_gate.weight          1.7620   1.6738   1.6123   1.5810   1.5654   1.5576   1.5560
+    blk.14.ffn_up.weight           1.8017   1.7180   1.6567   1.6255   1.6098   1.6020   1.6005
+    blk.14.attn_k.weight           1.6582   1.6642   1.6519   1.6301   1.6156   1.6078   1.6062
+    blk.21.attn_output.weight      1.7507   1.6787   1.6352   1.6191   1.6133   1.6076   1.6062
+    blk.25.ffn_down.weight         1.8134   1.7241   1.6625   1.6313   1.6156   1.6078   1.6062
+    blk.29.ffn_gate.weight         1.7554   1.6723   1.6116   1.5803   1.5647   1.5569   1.5553
+    blk.29.attn_q.weight           1.7925   1.7217   1.6625   1.6313   1.6156   1.6078   1.6062
+
+  (b) zero-skip, non-skipped blocks at 2.000, bits/weight by block size:
+
+    tensor                            B=4      B=8     B=16     B=32     B=64    B=128    B=160
+    blk.0.ffn_down.weight          2.2057   2.1240   2.0625   2.0312   2.0156   2.0078   2.0063
+    blk.0.attn_q.weight            1.9642   1.9878   1.9918   1.9917   1.9949   1.9985   1.9992
+    blk.4.attn_v.weight            2.2137   2.1242   2.0625   2.0312   2.0156   2.0078   2.0063
+    blk.7.ffn_gate.weight          2.1399   2.0610   1.9997   1.9685   1.9528   1.9450   1.9435
+    blk.14.ffn_up.weight           2.1897   2.1163   2.0553   2.0240   2.0084   2.0006   1.9990
+    blk.14.attn_k.weight           2.0103   2.0490   2.0492   2.0298   2.0155   2.0078   2.0063
+    blk.21.attn_output.weight      2.1258   2.0672   2.0284   2.0161   2.0127   2.0075   2.0063
+    blk.25.ffn_down.weight         2.2042   2.1239   2.0625   2.0312   2.0156   2.0078   2.0063
+    blk.29.ffn_gate.weight         2.1317   2.0591   1.9988   1.9676   1.9520   1.9442   1.9426
+    blk.29.attn_q.weight           2.1781   2.1209   2.0624   2.0312   2.0156   2.0078   2.0063
+
+  (d) per-block enumerative, bits/weight by block size:
+
+    tensor                            B=4      B=8     B=16     B=32     B=64    B=128    B=160
+    blk.0.ffn_down.weight          1.5774   1.5773   1.5771   1.5766   1.5759   1.5753   1.5751
+    blk.0.attn_q.weight            1.4742   1.4506   1.4265   1.4060   1.3905   1.3799   1.3774
+    blk.4.attn_v.weight            1.5824   1.5823   1.5813   1.5794   1.5783   1.5776   1.5774
+    blk.7.ffn_gate.weight          1.5611   1.5490   1.5369   1.5306   1.5274   1.5257   1.5254
+    blk.14.ffn_up.weight           1.5696   1.5689   1.5670   1.5659   1.5652   1.5648   1.5646
+    blk.14.attn_k.weight           1.4897   1.4722   1.4531   1.4356   1.4222   1.4126   1.4102
+    blk.21.attn_output.weight      1.5542   1.5442   1.5324   1.5232   1.5179   1.5148   1.5416
+    blk.25.ffn_down.weight         1.5757   1.5757   1.5757   1.5755   1.5751   1.5748   1.5747
+    blk.29.ffn_gate.weight         1.5592   1.5472   1.5346   1.5270   1.5221   1.5186   1.5176
+    blk.29.attn_q.weight           1.5611   1.5607   1.5601   1.5589   1.5574   1.5556   1.5550
+
+  (d) is not monotone in B for every tensor -- blk.21.attn_output.weight
+  rises from B=128 to B=160. That is alignment, not an error: its zero
+  runs are 128-134 long, so 128-blocks land on them and 160-blocks do
+  not, which narrows the spread of the per-block count and costs the
+  scheme the skew it was living on.
+
+  MODEL-WIDE, all 210 i2_s tensors, 2,084,044,800 weights
+  (total bits over total weights, not an average of rates):
+
+    scheme                                          bits/wt  vs 1.600  vs 2.000
+    i2_s, as shipped                                 2.0000   -25.00%     0.00%
+    (a) dense base-3                                 1.6000     0.00%    20.00%
+    (b) zero-skip at 1.600, best B=160               1.5672     2.05%    21.64%
+    (f) dense base-3 + 1 skip bit per ROW            1.5613     2.42%    21.93%
+    (c) order-0 arithmetic, one global table         1.5603     2.48%    21.98%
+    (c) order-0 arithmetic, one table per tensor     1.5553     2.80%    22.24%
+        order-1 arithmetic, row-major context        1.5483     3.23%    22.58%
+    (e) order-0 arithmetic, one table per row        1.5475     3.28%    22.62%
+    (d) enumerative, best B=128                      1.5182     5.11%    24.09%
+
+    (b) in full, model-wide: B=4:1.7571  B=8:1.6800  B=16:1.6221  B=32:1.5918  B=64:1.5765  B=128:1.5687  B=160:1.5672
+
+
+7. VERDICT  (question 6)
+---------------------------------------------------------------------------
+  Reference point for 'is it worth a decoder': the shipped i2_s kernel
+  sustains 20.19 GB/s of weight bytes at a DRAM-resident working set --
+  33,554,432 weights in 0.415 ms, i.e. 262,144 blocks of 128 in 0.415 ms
+  = 632 million blocks/s (results/bench_code_kernel.txt, rows=8192).
+  A replacement decoder must hold that while doing strictly more per
+  block than a shift and a mask.
+
+  5 of the 5 schemes DO beat 1.600 bits/weight model-wide, the
+  best by 5.11%. None beats it by enough to be worth building.
+
+  Best measured: (d) enumerative, B=128 at 1.5182 bits/weight,
+  5.11% below dense base-3 and 24.09% below the shipped 2.000.
+  In bytes on this 2B model that is 20.3 MiB saved against base-3,
+  on top of the 99.4 MiB that base-3 already saves against i2_s.
+
+  The numbers behind that:
+
+  - Order-1 context buys 0.00694 bits/weight (0.434%), and over live rows
+    only 0.00076 (0.047%). The weights are serially independent in
+    storage order and in row-major order alike; what the order-1 number
+    does show is the dead rows being trivially predictable, not a
+    weight-to-weight relationship. A context model is ruled out outright.
+  - Zero-skip flags: 1.5672 at their best (B=160), 2.05% below 1.600,
+    but they LOSE at small blocks (1.7571 at B=4) because break-even
+    needs an all-zero fraction above 1/(1.6*B) = 15.6% at B=4, 0.49% at
+    B=128. Every bit of their win comes from the dead rows, not from
+    local sparsity -- which is why bigger blocks are strictly better and
+    why (f), one flag per ROW, gets nearly the same for far less work.
+  - Order-0 arithmetic: 1.5553 per tensor (2.80%), 1.5603 with one
+    global table (2.48%). Both need a serial range decoder, whose
+    dependency chain cannot be made to run at 632M blocks/s. Paying that
+    to save 2.5% of bytes on a bandwidth-bound kernel is a bad trade.
+  - The one real structure is per-row sparsity: 19,847 of 683,520
+    rows (2.90%) are entirely zero, up to 43.59% of a single
+    tensor, and the surviving rows differ widely in density. It is worth
+    2.42% as a row skip bit (f) and 3.28% as a per-row table (e).
+  - The enumerative scheme (d) is the only one past 3.3%, at 5.11%, and it is
+    the most expensive to decode of all of them: a binomial rank/unrank
+    per block. It is the clearest case of the pattern -- the more of the
+    structure a scheme captures, the less it can keep up with the kernel.
+
+  So the practical ceiling on a repacking effort is the 20.00% between
+  the shipped 2.000 and dense base-3 at 1.600. base-3 decodes with a
+  multiply and a shift and stays vectorisable; everything below it here
+  is worth at most a further 5.11% and costs a decoder that is no
+  longer memory-bound, which defeats the purpose on a kernel whose whole
+  problem is bytes. If the dead rows are worth having, the way to take
+  them is to drop those rows from the model, not to entropy-code them.
+
+
+APPENDIX -- EVERY i2_s TENSOR MEASURED
+---------------------------------------------------------------------------
+  tensor                              weights    zero%      H0   H1 row  0-rows
+  blk.0.ffn_down.weight            17,694,720  38.214%  1.5774   1.5774       0
+  blk.0.ffn_gate.weight            17,694,720  39.131%  1.5743   1.5696     330
+  blk.0.ffn_up.weight              17,694,720  38.026%  1.5780   1.5726     330
+  blk.0.attn_k.weight               1,638,400  46.474%  1.5317   1.5069       0
+  blk.0.attn_output.weight          6,553,600  47.494%  1.5233   1.4927       0
+  blk.0.attn_q.weight               6,553,600  49.617%  1.5038   1.4811       0
+  blk.0.attn_v.weight               1,638,400  42.983%  1.5559   1.5537       0
+  blk.1.ffn_down.weight            17,694,720  59.933%  1.3720   1.3721       0
+  blk.1.ffn_gate.weight            17,694,720  60.080%  1.3697   1.1729    3013
+  blk.1.ffn_up.weight              17,694,720  59.989%  1.3711   1.1725    3013
+  blk.1.attn_k.weight               1,638,400  41.159%  1.5657   1.5638       0
+  blk.1.attn_output.weight          6,553,600  45.264%  1.5409   1.5358       0
+  blk.1.attn_q.weight               6,553,600  44.206%  1.5482   1.5435       0
+  blk.1.attn_v.weight               1,638,400  40.179%  1.5702   1.5670      19
+  blk.10.ffn_down.weight           17,694,720  40.275%  1.5698   1.5698       0
+  blk.10.ffn_gate.weight           17,694,720  40.937%  1.5668   1.5668      22
+  blk.10.ffn_up.weight             17,694,720  39.952%  1.5711   1.5711      22
+  blk.10.attn_k.weight              1,638,400  47.969%  1.5191   1.5095       0
+  blk.10.attn_output.weight         6,553,600  39.840%  1.5716   1.5715       0
+  blk.10.attn_q.weight              6,553,600  49.108%  1.5087   1.5045       0
+  blk.10.attn_v.weight              1,638,400  37.213%  1.5802   1.5801       0
+  blk.11.ffn_down.weight           17,694,720  40.385%  1.5693   1.5693       0
+  blk.11.ffn_gate.weight           17,694,720  41.234%  1.5654   1.5653      38
+  blk.11.ffn_up.weight             17,694,720  40.086%  1.5706   1.5705      38
+  blk.11.attn_k.weight              1,638,400  46.727%  1.5296   1.5243       0
+  blk.11.attn_output.weight         6,553,600  39.281%  1.5738   1.5737       0
+  blk.11.attn_q.weight              6,553,600  48.670%  1.5128   1.5089       0
+  blk.11.attn_v.weight              1,638,400  36.699%  1.5813   1.5813       0
+  blk.12.ffn_down.weight           17,694,720  40.660%  1.5681   1.5681       0
+  blk.12.ffn_gate.weight           17,694,720  41.529%  1.5639   1.5638      33
+  blk.12.ffn_up.weight             17,694,720  40.237%  1.5700   1.5699      33
+  blk.12.attn_k.weight              1,638,400  45.915%  1.5360   1.5294       0
+  blk.12.attn_output.weight         6,553,600  39.404%  1.5733   1.5732       0
+  blk.12.attn_q.weight              6,553,600  48.195%  1.5171   1.5124       0
+  blk.12.attn_v.weight              1,638,400  36.917%  1.5809   1.5808       0
+  blk.13.ffn_down.weight           17,694,720  40.784%  1.5675   1.5675       0
+  blk.13.ffn_gate.weight           17,694,720  41.763%  1.5627   1.5626      35
+  blk.13.ffn_up.weight             17,694,720  40.430%  1.5691   1.5690      35
+  blk.13.attn_k.weight              1,638,400  42.427%  1.5591   1.5583       0
+  blk.13.attn_output.weight         6,553,600  38.871%  1.5753   1.5752       0
+  blk.13.attn_q.weight              6,553,600  44.630%  1.5454   1.5445       0
+  blk.13.attn_v.weight              1,638,400  36.441%  1.5819   1.5819       0
+  blk.14.ffn_down.weight           17,694,720  40.306%  1.5697   1.5696       0
+  blk.14.ffn_gate.weight           17,694,720  41.516%  1.5640   1.5639      25
+  blk.14.ffn_up.weight             17,694,720  40.296%  1.5697   1.5696      25
+  blk.14.attn_k.weight              1,638,400  48.895%  1.5107   1.4944       0
+  blk.14.attn_output.weight         6,553,600  41.721%  1.5629   1.5615       0
+  blk.14.attn_q.weight              6,553,600  50.910%  1.4907   1.4814       0
+  blk.14.attn_v.weight              1,638,400  37.557%  1.5793   1.5792       0
+  blk.15.ffn_down.weight           17,694,720  39.826%  1.5717   1.5717       0
+  blk.15.ffn_gate.weight           17,694,720  41.453%  1.5643   1.5642      35
+  blk.15.ffn_up.weight             17,694,720  40.307%  1.5697   1.5696      35
+  blk.15.attn_k.weight              1,638,400  43.482%  1.5529   1.5510       0
+  blk.15.attn_output.weight         6,553,600  38.894%  1.5752   1.5751       0
+  blk.15.attn_q.weight              6,553,600  45.648%  1.5381   1.5362       0
+  blk.15.attn_v.weight              1,638,400  36.142%  1.5824   1.5824       0
+  blk.16.ffn_down.weight           17,694,720  39.974%  1.5711   1.5711       0
+  blk.16.ffn_gate.weight           17,694,720  41.512%  1.5640   1.5638      64
+  blk.16.ffn_up.weight             17,694,720  40.354%  1.5694   1.5692      64
+  blk.16.attn_k.weight              1,638,400  45.733%  1.5374   1.5317       0
+  blk.16.attn_output.weight         6,553,600  39.526%  1.5728   1.5728       0
+  blk.16.attn_q.weight              6,553,600  47.694%  1.5215   1.5169       0
+  blk.16.attn_v.weight              1,638,400  36.958%  1.5808   1.5808       0
+  blk.17.ffn_down.weight           17,694,720  39.934%  1.5712   1.5712       0
+  blk.17.ffn_gate.weight           17,694,720  41.778%  1.5626   1.5622     106
+  blk.17.ffn_up.weight             17,694,720  40.665%  1.5681   1.5676     106
+  blk.17.attn_k.weight              1,638,400  47.608%  1.5223   1.5126       0
+  blk.17.attn_output.weight         6,553,600  38.563%  1.5763   1.5762       0
+  blk.17.attn_q.weight              6,553,600  49.324%  1.5066   1.5016       0
+  blk.17.attn_v.weight              1,638,400  36.675%  1.5814   1.5813       0
+  blk.18.ffn_down.weight           17,694,720  40.039%  1.5708   1.5708       0
+  blk.18.ffn_gate.weight           17,694,720  41.863%  1.5622   1.5614     149
+  blk.18.ffn_up.weight             17,694,720  40.955%  1.5667   1.5658     149
+  blk.18.attn_k.weight              1,638,400  44.463%  1.5465   1.5441       0
+  blk.18.attn_output.weight         6,553,600  40.771%  1.5676   1.5667       0
+  blk.18.attn_q.weight              6,553,600  47.538%  1.5229   1.5198       0
+  blk.18.attn_v.weight              1,638,400  36.412%  1.5819   1.5817       0
+  blk.19.ffn_down.weight           17,694,720  40.254%  1.5699   1.5699       0
+  blk.19.ffn_gate.weight           17,694,720  41.936%  1.5618   1.5603     204
+  blk.19.ffn_up.weight             17,694,720  41.128%  1.5659   1.5643     204
+  blk.19.attn_k.weight              1,638,400  42.540%  1.5585   1.5577       0
+  blk.19.attn_output.weight         6,553,600  39.215%  1.5740   1.5740       0
+  blk.19.attn_q.weight              6,553,600  44.616%  1.5455   1.5445       0
+  blk.19.attn_v.weight              1,638,400  36.479%  1.5818   1.5818       0
+  blk.2.ffn_down.weight            17,694,720  51.476%  1.4846   1.4846       0
+  blk.2.ffn_gate.weight            17,694,720  51.444%  1.4850   1.3890    1906
+  blk.2.ffn_up.weight              17,694,720  51.493%  1.4844   1.3886    1906
+  blk.2.attn_k.weight               1,638,400  39.264%  1.5738   1.5736       0
+  blk.2.attn_output.weight          6,553,600  42.923%  1.5563   1.5497       0
+  blk.2.attn_q.weight               6,553,600  41.962%  1.5617   1.5607       0
+  blk.2.attn_v.weight               1,638,400  36.301%  1.5821   1.5819       0
+  blk.20.ffn_down.weight           17,694,720  40.086%  1.5706   1.5706       0
+  blk.20.ffn_gate.weight           17,694,720  41.846%  1.5623   1.5608     206
+  blk.20.ffn_up.weight             17,694,720  41.161%  1.5657   1.5641     206
+  blk.20.attn_k.weight              1,638,400  47.634%  1.5220   1.5108       0
+  blk.20.attn_output.weight         6,553,600  40.813%  1.5674   1.5673       0
+  blk.20.attn_q.weight              6,553,600  49.764%  1.5023   1.4966       0
+  blk.20.attn_v.weight              1,638,400  37.889%  1.5784   1.5783       0
+  blk.21.ffn_down.weight           17,694,720  39.596%  1.5726   1.5726       0
+  blk.21.ffn_gate.weight           17,694,720  41.290%  1.5651   1.5643     148
+  blk.21.ffn_up.weight             17,694,720  40.674%  1.5680   1.5671     148
+  blk.21.attn_k.weight              1,638,400  47.260%  1.5252   1.5164       0
+  blk.21.attn_output.weight         6,553,600  42.312%  1.5598   1.5570       0
+  blk.21.attn_q.weight              6,553,600  49.540%  1.5045   1.4978       4
+  blk.21.attn_v.weight              1,638,400  38.226%  1.5774   1.5773       0
+  blk.22.ffn_down.weight           17,694,720  38.956%  1.5750   1.5749       0
+  blk.22.ffn_gate.weight           17,694,720  40.781%  1.5675   1.5673      74
+  blk.22.ffn_up.weight             17,694,720  39.983%  1.5710   1.5707      74
+  blk.22.attn_k.weight              1,638,400  43.499%  1.5528   1.5513       0
+  blk.22.attn_output.weight         6,553,600  42.191%  1.5604   1.5568       0
+  blk.22.attn_q.weight              6,553,600  46.782%  1.5292   1.5269       0
+  blk.22.attn_v.weight              1,638,400  36.770%  1.5812   1.5812       0
+  blk.23.ffn_down.weight           17,694,720  38.862%  1.5753   1.5753       0
+  blk.23.ffn_gate.weight           17,694,720  40.744%  1.5677   1.5674      71
+  blk.23.ffn_up.weight             17,694,720  40.069%  1.5707   1.5704      71
+  blk.23.attn_k.weight              1,638,400  47.617%  1.5222   1.5104       0
+  blk.23.attn_output.weight         6,553,600  41.785%  1.5626   1.5624       0
+  blk.23.attn_q.weight              6,553,600  49.310%  1.5068   1.5012       0
+  blk.23.attn_v.weight              1,638,400  37.709%  1.5789   1.5788       0
+  blk.24.ffn_down.weight           17,694,720  38.878%  1.5752   1.5752       0
+  blk.24.ffn_gate.weight           17,694,720  41.018%  1.5664   1.5660      99
+  blk.24.ffn_up.weight             17,694,720  40.353%  1.5694   1.5690      99
+  blk.24.attn_k.weight              1,638,400  49.596%  1.5040   1.4855       0
+  blk.24.attn_output.weight         6,553,600  41.154%  1.5658   1.5656       0
+  blk.24.attn_q.weight              6,553,600  50.575%  1.4942   1.4858       0
+  blk.24.attn_v.weight              1,638,400  39.056%  1.5746   1.5745       0
+  blk.25.ffn_down.weight           17,694,720  38.725%  1.5758   1.5757       0
+  blk.25.ffn_gate.weight           17,694,720  40.927%  1.5668   1.5665      91
+  blk.25.ffn_up.weight             17,694,720  40.200%  1.5701   1.5697      91
+  blk.25.attn_k.weight              1,638,400  44.052%  1.5492   1.5471       0
+  blk.25.attn_output.weight         6,553,600  42.066%  1.5611   1.5606       0
+  blk.25.attn_q.weight              6,553,600  45.291%  1.5407   1.5396       0
+  blk.25.attn_v.weight              1,638,400  37.786%  1.5787   1.5786       0
+  blk.26.ffn_down.weight           17,694,720  38.905%  1.5751   1.5751       0
+  blk.26.ffn_gate.weight           17,694,720  40.943%  1.5668   1.5662     117
+  blk.26.ffn_up.weight             17,694,720  40.197%  1.5701   1.5695     117
+  blk.26.attn_k.weight              1,638,400  43.941%  1.5500   1.5474       0
+  blk.26.attn_output.weight         6,553,600  42.185%  1.5605   1.5602       0
+  blk.26.attn_q.weight              6,553,600  45.140%  1.5418   1.5409       0
+  blk.26.attn_v.weight              1,638,400  38.558%  1.5763   1.5761       0
+  blk.27.ffn_down.weight           17,694,720  39.308%  1.5737   1.5737       0
+  blk.27.ffn_gate.weight           17,694,720  41.330%  1.5649   1.5634     182
+  blk.27.ffn_up.weight             17,694,720  40.487%  1.5689   1.5675     182
+  blk.27.attn_k.weight              1,638,400  42.823%  1.5569   1.5555       0
+  blk.27.attn_output.weight         6,553,600  42.052%  1.5612   1.5608       0
+  blk.27.attn_q.weight              6,553,600  45.364%  1.5401   1.5389       0
+  blk.27.attn_v.weight              1,638,400  36.605%  1.5815   1.5815       0
+  blk.28.ffn_down.weight           17,694,720  39.457%  1.5731   1.5731       0
+  blk.28.ffn_gate.weight           17,694,720  41.108%  1.5660   1.5647     145
+  blk.28.ffn_up.weight             17,694,720  40.193%  1.5701   1.5690     145
+  blk.28.attn_k.weight              1,638,400  40.956%  1.5667   1.5663       0
+  blk.28.attn_output.weight         6,553,600  44.438%  1.5467   1.5462       0
+  blk.28.attn_q.weight              6,553,600  42.864%  1.5566   1.5565       0
+  blk.28.attn_v.weight              1,638,400  37.581%  1.5792   1.5791       0
+  blk.29.ffn_down.weight           17,694,720  40.633%  1.5682   1.5682       0
+  blk.29.ffn_gate.weight           17,694,720  41.299%  1.5651   1.5621     220
+  blk.29.ffn_up.weight             17,694,720  40.383%  1.5693   1.5665     220
+  blk.29.attn_k.weight              1,638,400  39.893%  1.5714   1.5711       0
+  blk.29.attn_output.weight         6,553,600  54.666%  1.4470   1.4424       0
+  blk.29.attn_q.weight              6,553,600  42.009%  1.5614   1.5612       0
+  blk.29.attn_v.weight              1,638,400  44.374%  1.5471   1.5183      79
+  blk.3.ffn_down.weight            17,694,720  45.496%  1.5392   1.5392       0
+  blk.3.ffn_gate.weight            17,694,720  45.307%  1.5406   1.5085    1021
+  blk.3.ffn_up.weight              17,694,720  45.416%  1.5398   1.5077    1021
+  blk.3.attn_k.weight               1,638,400  41.756%  1.5627   1.5618       0
+  blk.3.attn_output.weight          6,553,600  42.175%  1.5605   1.5592       0
+  blk.3.attn_q.weight               6,553,600  43.516%  1.5527   1.5514       0
+  blk.3.attn_v.weight               1,638,400  37.079%  1.5805   1.5803       0
+  blk.4.ffn_down.weight            17,694,720  42.985%  1.5559   1.5559       0
+  blk.4.ffn_gate.weight            17,694,720  42.954%  1.5561   1.5435     616
+  blk.4.ffn_up.weight              17,694,720  42.778%  1.5571   1.5444     616
+  blk.4.attn_k.weight               1,638,400  42.089%  1.5610   1.5595       0
+  blk.4.attn_output.weight          6,553,600  41.336%  1.5649   1.5641       0
+  blk.4.attn_q.weight               6,553,600  44.850%  1.5438   1.5414       0
+  blk.4.attn_v.weight               1,638,400  36.106%  1.5825   1.5824       0
+  blk.5.ffn_down.weight            17,694,720  41.701%  1.5630   1.5630       0
+  blk.5.ffn_gate.weight            17,694,720  41.192%  1.5656   1.5622     307
+  blk.5.ffn_up.weight              17,694,720  40.974%  1.5666   1.5632     307
+  blk.5.attn_k.weight               1,638,400  44.164%  1.5485   1.5449       0
+  blk.5.attn_output.weight          6,553,600  41.994%  1.5615   1.5597       0
+  blk.5.attn_q.weight               6,553,600  46.448%  1.5319   1.5287       0
+  blk.5.attn_v.weight               1,638,400  36.194%  1.5823   1.5822       0
+  blk.6.ffn_down.weight            17,694,720  41.042%  1.5663   1.5663       0
+  blk.6.ffn_gate.weight            17,694,720  40.787%  1.5675   1.5661     189
+  blk.6.ffn_up.weight              17,694,720  40.498%  1.5688   1.5674     189
+  blk.6.attn_k.weight               1,638,400  45.887%  1.5362   1.5300       0
+  blk.6.attn_output.weight          6,553,600  40.442%  1.5691   1.5688       0
+  blk.6.attn_q.weight               6,553,600  47.122%  1.5264   1.5235       0
+  blk.6.attn_v.weight               1,638,400  37.259%  1.5800   1.5799       0
+  blk.7.ffn_down.weight            17,694,720  41.153%  1.5658   1.5658       0
+  blk.7.ffn_gate.weight            17,694,720  41.187%  1.5656   1.5639     217
+  blk.7.ffn_up.weight              17,694,720  40.650%  1.5681   1.5664     217
+  blk.7.attn_k.weight               1,638,400  45.925%  1.5360   1.5303       0
+  blk.7.attn_output.weight          6,553,600  41.505%  1.5640   1.5633       0
+  blk.7.attn_q.weight               6,553,600  46.885%  1.5283   1.5246       0
+  blk.7.attn_v.weight               1,638,400  37.555%  1.5793   1.5786       5
+  blk.8.ffn_down.weight            17,694,720  40.835%  1.5673   1.5673       0
+  blk.8.ffn_gate.weight            17,694,720  40.978%  1.5666   1.5659     140
+  blk.8.ffn_up.weight              17,694,720  40.334%  1.5695   1.5688     140
+  blk.8.attn_k.weight               1,638,400  47.407%  1.5240   1.5161       0
+  blk.8.attn_output.weight          6,553,600  42.197%  1.5604   1.5578       0
+  blk.8.attn_q.weight               6,553,600  50.125%  1.4987   1.4910       0
+  blk.8.attn_v.weight               1,638,400  36.707%  1.5813   1.5812       0
+  blk.9.ffn_down.weight            17,694,720  40.655%  1.5681   1.5681       0
+  blk.9.ffn_gate.weight            17,694,720  41.034%  1.5663   1.5662      67
+  blk.9.ffn_up.weight              17,694,720  40.059%  1.5707   1.5705      67
+  blk.9.attn_k.weight               1,638,400  42.458%  1.5589   1.5572       0
+  blk.9.attn_output.weight          6,553,600  40.127%  1.5704   1.5703       0
+  blk.9.attn_q.weight               6,553,600  44.824%  1.5440   1.5427       0
+  blk.9.attn_v.weight               1,638,400  36.813%  1.5811   1.5810       0
+
+
+NOT MEASURED
+---------------------------------------------------------------------------
+  Nothing. Every i2_s tensor in the file was read in full.

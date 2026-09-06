@@ -1,0 +1,275 @@
+SPENDING 2.000 BITS ON A VALUE THAT CARRIES 1.585
+==============================================================================
+
+  Reproduce:
+      make -C src_modifications build/obj/ggml_i2s_ternary.o \
+                                build/obj/ternary_t10.o
+      gcc -O3 -mavx2 -mfma -march=native -std=c11 -pthread \
+          src_modifications/bench/bench_token.c \
+          src_modifications/build/obj/ggml_i2s_ternary.o \
+          src_modifications/build/obj/ternary_t10.o \
+          -o src_modifications/build/bench_token
+      ./src_modifications/build/bench_token 4 3
+      ./src_modifications/build/bench_token 6 3
+
+      gcc -O3 -mavx2 -march=native -std=c11 \
+          src_modifications/bench/bench_ports.c -o src_modifications/build/bench_ports
+      taskset -c 5 ./src_modifications/build/bench_ports
+
+  Correctness for the packing measured here: ./src_modifications/build/test_t10
+  (80,076 checks, 0 failures), and see results/thread_headroom.txt for the
+  budget this experiment was designed against.
+
+
+1. THE QUESTION, AND WHY IT IS THE DESIGN DOCUMENT'S OWN
+------------------------------------------------------------------------------
+
+  The design document names its own bottleneck twice. Its abstract says large
+  models are "bottlenecked by the 'Memory Wall' -- the physical limitation of
+  transferring [...] data from RAM to compute units", and its evaluation says
+  "memory bandwidth utilization is minimized because the L1 and L2 caches are
+  exclusively filled with compressed ternary weights [...] effectively
+  multiplying the apparent size of the hardware cache". Its kernel listing is
+  headed "Rechnen auf komprimierten Daten (PoCD) fuer 1.58-Bit (Ternary)
+  Weights", and its own comment concedes that the listing does not actually
+  use a packed layout: "In einer echten 2-Bit Packung muessten diese per
+  Bitshift extrahiert werden. Hier laden wir sie als 8-Bit Integers."
+
+  So the document asks for two things at once: compute on the compressed form,
+  and let the compression be 1.58 bits. llama.cpp's i2_s format delivers the
+  first and spends 2.00 bits on a value carrying log2(3) = 1.585. Ten ternary
+  values fit in one uint16 (3^10 = 59049 <= 65536) at exactly 1.600 bits.
+
+  On the real model that is not a rounding difference:
+
+      2,084,044,800 ternary weights in 210 i2_s tensors
+      i2_s   2.000 bits/weight      521.0 MB read per generated token
+      t10    1.600 bits/weight      418.8 MB
+      saved                         102.2 MB per token, 19.6%
+
+  And results/thread_headroom.txt shows the saving is spendable: the arithmetic
+  a core can do scales with core count and the memory it is fed does not, so the
+  surplus grows from 1.35x at one thread to 3.03x at six.
+
+  PRIOR ART, stated up front. Going below two bits is not a new idea and is not
+  this project's. BitNet's own llama.cpp fork carries GGML_BITNET_X86_TL2, a
+  lookup-table format whose size formula in ggml.c is
+  (ne0-256)*ne1/3*5/8 + 256*ne1/2*4/8 -- three ternary values in five bits, or
+  1.667 bits for the bulk of each tensor. It is behind a build flag this
+  project's Dockerfile does not set, and it needs a differently quantised model
+  file, so it could not be measured here. What is new below is the packing at
+  1.600 rather than 1.667 and a kernel that reaches the values by arithmetic
+  alone -- no table, no digit ever materialised.
+
+
+2. TWO KERNELS, AND THE DIFFERENCE BETWEEN THEM IS THE WHOLE RESULT
+------------------------------------------------------------------------------
+
+  Both pack at 1.600 bits. They differ in which SIMD lane width they compute in,
+  and that turns out to decide everything.
+
+  t10 -- ten trits per uint16, 16 lanes.
+  A block is 16 uint16 carrying 160 weights; lane j holds sum_k code(w[16k+j]) *
+  3^k with code = w + 1. The kernel never extracts a digit. Writing
+  x_j = floor(x / 3^j), so that code_k = x_k - 3*x_{k+1} and x_10 = 0,
+  substitution and re-indexing give
+
+      sum_k code_k * a_k  =  x_0*b_0 + sum_{j=1}^{9} x_j*b_j
+      with b_0 = a_0 and b_j = a_j - 3*a_{j-1}
+
+  so the kernel needs only the quotient chain and a transformed activation
+  vector, and b depends only on the activations -- computed once per GEMV, the
+  same discipline sum_a already follows. floor(x/3) is
+  srli(mulhi_epu16(x, 43691), 1), exact over the whole uint16 range. It is exact
+  modulo 2^32 rather than term by term, because intermediate products are large
+  and cancel; the suite drives the accumulator 4.96 times past 2^31 on purpose
+  and checks the answer is still right.
+
+  It is elegant and it is the slower of the two.
+
+  t5b -- five trits per BYTE, 32 lanes.
+  A block is 32 bytes carrying 160 weights; byte j holds sum_k code(w[32k+j]) *
+  3^k, at most 242. That is llama.cpp's own i2_s interleave -- bits 6-7 of byte
+  j hold weight 0+j, bits 4-5 hold weight 32+j -- extended from four digits to
+  five. Because the packed value never exceeds 242, all four quotients come
+  straight from it with one vpmulhuw each and no chaining: floor(x/3), /9, /27
+  and /81 are mulhi by 21846, 7282, 2428 and 811, each verified exhaustively
+  over 0..242. The digits then follow with shifts and subtractions on the cheap
+  ports, and every digit plane is a register of bytes in {0,1,2} -- which
+  vpmaddubsw consumes directly against raw int8 activations, 32 lanes at a time.
+
+  No activation transform, no bias correction, no 16-bit contraction. The whole
+  advantage is that a multiply-port instruction covers 32 weights instead of 16,
+  and it is worth 1.5x more than the elegance of t10's identity.
+
+3. THE RESULT: IT WINS AT SIX THREADS, SEVEN TIMES OUT OF EIGHT
+------------------------------------------------------------------------------
+
+  One token's weight traffic, all 210 tensors, full footprint so every weight is
+  cold, best of five to seven passes, arms rotated so no arm always runs last.
+
+  THE HOST IS NOT QUIET AND CANNOT BE MADE QUIET. It carries a live trading bot
+  and its containers, and the load average does not fall below about 1.8 for
+  more than a few minutes at a time. Two of the runs below caught it at 1.20 and
+  1.84; the rest were taken between 1.9 and 2.4. Rotation and best-of-N are what
+  make the comparison survive that, not a clean machine.
+
+  Every paired six-thread observation taken, in the order taken:
+
+      #   i2_s      t5b       t5b/i2_s   load   kernel
+      1   15.15 ms  11.18 ms   1.354     1.20   per-row
+      2   13.98     11.84      1.181     ~1.9   per-row
+      3   13.38     12.15      1.101     ~1.9   per-row
+      4   14.94     13.86      1.078     ~1.9   per-row
+      5   17.10     14.90      1.147     2.41   gemv entry point
+      6   13.34     11.71      1.139     1.84   gemv
+      7   14.54     14.13      1.029     ~2.1   gemv
+      8   13.75     14.20      0.968     ~2.2   gemv
+
+  Seven of eight favour the denser format; the median is 1.12x and the range is
+  0.97 to 1.35. Best against best over everything measured -- i2_s never
+  improves past four threads because memory peaks there -- is 13.00 ms against
+  11.71: 1.110x.
+
+  THIS IS A WEAKER CLAIM THAN THIS FILE MADE AN HOUR AGO, and the correction is
+  the point. It said "four runs out of four" and quoted 1.165x. Those four runs
+  were real, and they were all taken in the quietest window the machine offered.
+  Four more taken later, at ordinary load, include one the denser format loses.
+  Nothing about the kernels changed between them. What changed is that the
+  effect is worth roughly 10%, the run-to-run spread on this host is worth
+  roughly 20%, and four samples cannot separate those. Eight can, barely, and
+  say seven-of-eight rather than always.
+
+  At four threads it loses in every run: 13.00 to 15.61 ms for i2_s against
+  16.69 to 20.64 for t5b, around 0.75x. The direction across thread counts is
+  the stable part of this result and it is the part the budget in
+  results/thread_headroom.txt predicts: i2_s stops improving when memory
+  saturates, t5b keeps improving because its limit is arithmetic, and they cross
+  where the machine stops being able to feed its cores.
+
+4. WHAT BINDS EACH KERNEL -- AND WHY THE FIRST TWO ANSWERS WERE WRONG
+------------------------------------------------------------------------------
+
+  Pure arithmetic rate, one core, weights small enough to stay in L2 so memory
+  cannot bind  (src_modifications/bench/bench_alu.c, taskset -c 5), against the
+  innermost loop of each compiled object:
+
+      kernel   GMAC/s   instr   mul   spill   weights   instr/w   mul ceiling   of it
+      i2_s      81.93      21     4      0      128      0.164      131.4        62%
+      t10       30.04   50.25 19.25   8.25      160      0.314       34.6        87%
+      t5b       33.74      47    13      0      160      0.294       50.5        67%
+
+  The ceiling is 1.05 multiply-class instructions per cycle at 3.91 GHz, both
+  measured -- src_modifications/bench/bench_ports.c puts vpmaddubsw, vpmaddwd,
+  vpmulhuw and vpmullw all at 1.05 per cycle and the cheap ones three to four
+  times higher (vpand 3.95, vpaddw 3.00). One scarce port.
+
+  Read the last column. t10 is at 87% of its ceiling and cannot be tuned out of
+  its problem: nineteen multiply ops per 160 weights is 8.4 MACs each against
+  upstream's 32, because it divides on the multiply port AND contracts with
+  vpmaddwd across 16 lanes where upstream uses vpmaddubsw across 32.
+
+  t5b fixes the second half by construction -- five trits per byte means the
+  digits arrive as bytes and vpmaddubsw takes them, so its contraction costs
+  five multiply ops per block instead of ten, and it needs no activation
+  transform at all. That put its ceiling at 50.5. It reached only 24.36 of it
+  (48%) until the spills came out: sixteen ymm registers could not hold three
+  blocks in flight, and objdump found 44 stack-touching moves in a
+  425-instruction function. One block per iteration, each digit plane contracted
+  the moment it exists and discarded, 67 instructions down to 47 and 8 spills to
+  0 -- 24.36 to 33.74 GMAC/s, and 48% of ceiling to 67%, which is better than
+  the 62% llama.cpp's own kernel manages against its own.
+
+  THIS SECTION HAS BEEN WRONG TWICE AND BOTH ERRORS WERE THE SAME SHAPE.
+  Version one quoted a port throughput of 0.71 per cycle, obtained by dividing
+  upstream's measured rate by upstream's instruction count -- so using it to
+  "predict" upstream was circular, and the 2% agreement it reported was
+  arithmetic. Version two, with the port properly measured at 1.05, claimed the
+  ratio of ceilings predicts the ratio of rates because both kernels sit at the
+  same fraction of ceiling; they do not, and the apparent agreement came from
+  comparing i2_s's cache-resident rate against t10's rate under memory pressure.
+  Both times the model was fitted to the outcome and both times it "worked".
+  What the port measurement actually licenses is a ceiling per kernel and
+  nothing else; how close each gets is a separate question with a separate
+  answer, and for t5b the answer was 44 spilled registers.
+
+
+5. WHAT IS AND IS NOT ESTABLISHED
+------------------------------------------------------------------------------
+
+  Established. Ten ternary weights fit in a uint16 and five fit in a byte, both
+  at 1.600 bits against i2_s's 2.000, verified by 80,076 and 20,645 assertions
+  including exhaustive checks of every magic-number division over its whole
+  input range, deliberate int32 wraparound, and the K = 6912 tail the real model
+  needs. On the model's full 521 MB of weights, at six threads, the byte-lane
+  kernel finishes a token's matmuls in 11.71 ms against 13.00 for the fastest
+  i2_s configuration, favourable in seven of eight paired six-thread runs. And
+  results/inference_t5b.txt carries it the rest of the way: converted and
+  integrated, the model produces byte-identical output and generates 5.7%
+  faster at four threads over 30 paired runs.
+
+  Not established. That this survives inside llama.cpp: nothing here has been
+  integrated, no GGUF has been repacked, and no token has been generated. The
+  edit sites are known and few -- ggml.c:1316 computes an i2_s tensor's byte
+  count as nbytes/4 + 32, ggml.c:7821 asserts it, ggml-cpu-i2s.c:49,196,211 take
+  the row stride as n/4, and tinyBLAS_I2S_AVX in sgemm.cpp does the same -- and
+  GGML_TYPE_TL2 already demonstrates in that same switch that a non-power-of-two
+  packing is expressible there. But few edit sites is not a working model.
+
+5a. IS THE BASELINE THE KERNEL THAT ACTUALLY RUNS? YES, AND THE CHECK
+    PRODUCED A SEPARATE FINDING
+------------------------------------------------------------------------------
+
+  Every i2_s number here comes from bitnet_vec_dot_i2_i8_s_reference, ggml's
+  AVX2 vec_dot branch copied verbatim. That looked like a problem: with
+  GGML_LLAMAFILE=ON the tinyBLAS_I2S_AVX path serves i2_s matmuls, and its
+  mnpack dispatch tiles up to four rows by four columns, so it amortises each
+  activation load across four weight rows and should issue about a third fewer
+  instructions per weight. Comparing against a kernel that never runs would have
+  flattered the denser format.
+
+  So the tiled shape was built and measured (src_modifications/bench/i2s_tiled.h,
+  upstream's arithmetic, cross-checked row by row against the reference):
+
+      footprint                    tiled       per-row     tiled/per-row
+      L2-resident, one core     95.82 GMAC/s  80.28 GMAC/s     1.19x
+      DRAM, 521 MB, one core     7.30 GB/s    13.94 GB/s       0.52x
+
+  The same kernel on the same bytes is 19% faster in cache and 48% SLOWER from
+  memory. Four rows at a 640-byte stride is four interleaved streams where the
+  per-row kernel has one linear one, and at a cold footprint that roughly halves
+  the delivered bandwidth. Threads are not the cause: this is one core.
+
+  Upstream agrees, and says so in its structure. ggml-cpu-i2s.c:25-33 --
+  ggml_gemv_i2_i8_s, the path a single generated token takes -- calls
+  ggml_vec_dot_i2_i8_s row by row with no tiling at all. The 4x4 tiling at
+  ggml-cpu-i2s.c:57 is inside ggml_gemm_i2_i8_s, the many-token GEMM path where
+  weights are reused across a batch and the workload is arithmetic-bound.
+  Upstream tiles for prompt processing and refuses to tile for generation, which
+  is exactly what these two rows say it should do.
+
+  The baseline was therefore right, and right for a reason worth having in
+  writing rather than by luck. It also means the whole comparison here is
+  against the faster of the two i2_s shapes at the footprint that matters: the
+  tiled arm needs 20.09 ms at four threads where the per-row arm needs 13.30.
+
+  The general form of the lesson: a cache-resident benchmark cannot see an
+  access-pattern penalty, and this one could not. The same measurement that
+  would have "corrected" the baseline in the wrong direction is the one that
+  found out why the baseline is correct.
+
+6. WHAT THIS DOES NOT SHOW
+------------------------------------------------------------------------------
+
+  - One host, one microarchitecture. The entire argument turns on the ratio
+    between a core's multiplier-port throughput and its share of memory
+    bandwidth. AVX-512 VNNI changes the numerator and a different memory
+    configuration changes the denominator.
+  - The benchmark replays weight traffic at the model's real shapes and real
+    total footprint. It is not a token: no attention, no KV cache, no norms, no
+    sampling, no runtime. Both arms omit the same things, so the ratio is an
+    upper bound on what a real token would show.
+  - GENERATION only. Prompt processing reuses each weight across the batch and
+    is arithmetic-bound, where a denser format costs and does not pay.
+  - The weights are random ternary, not the model's. Neither kernel is
+    data-dependent, and the measured quantity is bytes moved.

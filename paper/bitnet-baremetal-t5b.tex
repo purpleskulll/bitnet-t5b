@@ -1,0 +1,754 @@
+% bitnet-baremetal-t5b.tex
+%
+% Sub-Two-Bit Ternary Weight Storage with Table-Free Arithmetic Decoding
+% Project: bitnet-baremetal   Format: t5b (five trits per byte)
+%
+% Build:  pdflatex bitnet-baremetal-t5b.tex   (twice, for references)
+%
+% MECHANISM, IN ONE SENTENCE, because it decides the related work and the
+% arXiv category: this is a LOSSLESS RE-ENCODING of already-ternary weights --
+% a radix-3 source code at 1.600 bits/weight instead of 2.000 -- together with
+% a SIMD kernel that decodes it arithmetically and contracts on the digits, so
+% the model is bit-for-bit unchanged and only storage and kernel differ. It is
+% not pruning, not weight sharing, and not quantisation.
+
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+% Latin Modern is cosmetic. arXiv's TeX Live has it; a minimal local
+% installation may not, and a preprint that will not compile on the machine
+% that wrote it is worse than one set in Computer Modern.
+\IfFileExists{lmodern.sty}{\usepackage{lmodern}}{}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{siunitx}
+\sisetup{group-separator={,},group-minimum-digits=4}
+
+\newtheorem{proposition}{Proposition}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  framesep=4pt,
+  backgroundcolor=\color{gray!8},
+}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{Sub-Two-Bit Ternary Weight Storage with\\
+       Table-Free Arithmetic Decoding for CPU Inference}
+\author{Justus Theile}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Ternary (1.58-bit) large language models are stored in practice at two bits per
+weight, \SI{26}{\percent} above the information content of a ternary symbol. We
+show that the residual redundancy is recoverable on commodity x86 CPUs without
+lookup tables and without decompressing weights into a wider representation. We
+introduce \textbf{t5b}, a radix-3 code that places five ternary values in one
+byte at exactly \num{1.600} bits per weight, and an AVX2 kernel that recovers
+all five digits from the packed byte using four \emph{independent}
+\code{vpmulhuw} instructions, exploiting the fact that a five-trit byte is
+bounded by \num{242} and therefore lies well inside the exactness range of the
+corresponding magic multipliers. The kernel contracts directly on the digits
+with \code{vpmaddubsw}, so no weight is ever materialised. We give a roofline
+argument identifying the condition under which a denser format is profitable ---
+the ratio between a core's multiply-port throughput and its share of memory
+bandwidth --- and verify it by measuring both quantities directly. Integrated
+into \code{llama.cpp} as a distinct \code{ggml} type alongside the existing
+two-bit format, t5b reduces the shipped \code{BitNet-b1.58-2B-4T} checkpoint
+from \SI{1.10}{\gibi\byte} to \SI{1.00}{\gibi\byte} and yields, under
+\code{llama-bench}, $1.132\times$ prompt and $1.143\times$ generation
+throughput, faster in five of five invocations. The re-encoding is lossless and
+the output is bit-identical: perplexity over \num{20480} tokens of WikiText-2
+agrees with the two-bit baseline to six significant figures. We further report
+that \SI{4.76}{\percent} of the model's feed-forward neurons are identically
+zero, that the dead index sets of the gate and up projections coincide in all
+thirty layers, and that an independent fine-tune revives none of them. All
+results are from a single AVX2 microarchitecture \emph{without} VNNI; we argue
+why VNNI is expected to narrow or invert the advantage, and note that an
+independent system targeting VNNI stores ternary weights at eight bits for that
+reason.
+\end{abstract}
+
+\section{Introduction}
+
+Quantisation to ternary weights $w\in\{-1,0,+1\}$ preserves task performance at
+the two-billion-parameter scale while removing multiplication from the dominant
+matrix operation. The resulting models are attractive for CPU deployment: the
+matrix--vector product requires only sign application and integer accumulation,
+and the weight matrix is small enough to change which hardware resource binds
+the computation.
+
+That last point is usually made as a footprint argument and left there. We take
+it as the design constraint. During autoregressive generation every weight is
+read exactly once per emitted token and used exactly once, so arithmetic
+intensity is fixed at one multiply--accumulate per stored weight and the
+achievable token time is bounded below by
+\begin{equation}
+t_{\text{token}} \;\ge\; \max\!\left(\frac{N\mu}{\pi},\;\frac{N\beta}{8B}\right),
+\label{eq:roofline}
+\end{equation}
+where $N$ is the number of weights, $\beta$ the bits used to store each, $\mu$
+the instructions issued on the binding execution port per multiply--accumulate,
+$\pi$ that port's throughput, and $B$ the memory bandwidth available to the
+executing core. The first term is arithmetic; the second is transport.
+
+Existing ternary CPU formats occupy the extremes of the $(\beta,\mu)$ trade-off
+that~\eqref{eq:roofline} describes. \code{llama.cpp}'s \code{i2\_s} uses
+$\beta=2$ with a decode of three shifts and four masks per 128 weights.
+\code{bitnet.cpp}'s \code{TL2} and the T-MAC system reach
+$\beta\approx\num{1.667}$ by table lookup, paying memory for the tables
+(\code{TL1} is at \num{2.0}); \code{llama.cpp}'s own \code{TQ1\_0} reaches
+\num{1.6875} by base-3 packing without a table, and \code{TQ2\_0}
+\num{2.0625}. In the
+opposite direction, \emph{Litespark} stores ternary weights at $\beta=8$, on the
+explicit grounds that ``using 2-bit packing would require unpacking weights
+before every computation, negating the performance benefit'' --- a decision made
+for targets whose dot-product instruction (\code{VPDPBUSD}, ARM \code{SDOT})
+consumes eight-bit operands.
+
+\paragraph{The base-3 packing itself is not new, and an earlier draft of this
+paper claimed it was.} \code{llama.cpp} has carried \code{TQ1\_0} since August
+2024 (pull request~\#8151): its block structure in \code{ggml-common.h} is
+annotated \emph{``5 elements per byte ($3^5 = 243 < 256$)''}, it decodes without
+a table, and it has an AVX2 dot product. \code{TQ1\_0} reaches \num{1.6875}
+bits per weight only because each 256-element block carries an f16 scale and a
+16-element remainder at two bits; the code bytes themselves are at \num{1.600}.
+Any claim of novelty for the packing would survive on the arithmetic of that
+block overhead alone, which is not a claim worth making. We had integrated into
+this very codebase without checking it, and record that here rather than in a
+footnote.
+
+What this paper contributes is therefore narrower: a per-tensor scale model that
+removes the block overhead and is drop-in for the \code{i2\_s} path of
+\code{bitnet.cpp}, an interleave identical to \code{i2\_s}'s so the access
+pattern is unchanged, a decode of four \emph{independent} magic multiplies, a
+column-blocked matrix--matrix kernel, an explicit and measurable condition for
+when any of this pays, and an end-to-end evaluation on a real ternary checkpoint
+against the format that ships with it.
+
+\paragraph{What this is and is not.}
+The mechanism is a \emph{lossless re-encoding} of weights that are already
+ternary, together with a decode-fused kernel. No weight value changes; the
+output is bit-identical. It is therefore neither pruning nor weight sharing nor
+a new quantisation scheme, and it composes with all three.
+
+\subsection{Contributions}
+\begin{enumerate}
+\item A \num{1.600}-bit variant of the \emph{known} base-3 packing
+      (\S\ref{sec:format}). Five ternary values as the base-3 digits of a byte
+      is \code{TQ1\_0}'s construction, not ours; ours is the scale model --- one
+      per-tensor scale in place of \code{TQ1\_0}'s per-256-block f16 and its
+      16-element two-bit remainder, removing the block overhead entirely
+      (\num{1.600} against \num{1.6875}, \SI{20}{\percent} denser than
+      \code{i2\_s}) --- with an interleave identical to \code{i2\_s}'s.
+\item A table-free decode in four multiplies (\S\ref{sec:kernel}). Because a
+      five-trit byte satisfies $x\le\num{242}$, all four quotients
+      $\lfloor x/3^{j}\rfloor$ lie inside the exactness range of 16-bit magic
+      multipliers and are obtained \emph{independently} rather than as a serial
+      chain, collapsing a depth-five dependence to depth one.
+\item An explicit profitability condition (\S\ref{sec:condition}) derived
+      from~\eqref{eq:roofline} and verified by measuring both $\pi$ and $B$
+      rather than inferring either.
+\item Integration and end-to-end evaluation (\S\ref{sec:results}) in
+      \code{llama.cpp}, with the two-bit path retained as a control and
+      losslessness verified by perplexity agreement over
+      $\num{2.05}\times10^{4}$ tokens.
+\item A structural observation (\S\ref{sec:dead}): \SI{4.76}{\percent} of the
+      checkpoint's feed-forward neurons are identically zero, the dead index
+      sets of $W_{\text{gate}}$ and $W_{\text{up}}$ coincide in all thirty
+      layers, and an independent fine-tune revives none of them.
+\end{enumerate}
+
+\section{Background}
+
+\subsection{The information bound}
+A ternary weight carries at most
+\begin{equation}
+H_{\max}=\log_{2}3=\num{1.58496}\ \text{bits},
+\end{equation}
+the origin of the ``1.58-bit'' label, attained only for a uniform distribution.
+The empirical marginal over all \num{2084044800} ternary weights of the shipped
+checkpoint is
+\begin{equation}
+(p_{-1},p_{0},p_{+1})=(\num{0.288940},\ \num{0.422109},\ \num{0.288951}),
+\end{equation}
+giving a zeroth-order entropy
+\begin{equation}
+H=-\sum_{s}p_{s}\log_{2}p_{s}=\num{1.5603}\ \text{bits}.
+\label{eq:entropy}
+\end{equation}
+The excess zero mass \emph{lowers} the floor below $\log_{2}3$. Storage at
+$\beta=2$ exceeds~\eqref{eq:entropy} by \SI{28.2}{\percent}; the code of
+\S\ref{sec:format} exceeds it by \SI{2.5}{\percent}.
+
+\subsection{The interface a replacement must preserve}
+\code{ggml}'s ternary kernels do not compute $\sum_i w_ia_i$ directly. They
+compute on the shifted code $c_i=w_i+1\in\{0,1,2\}$, the unsigned operand
+\code{vpmaddubsw} requires, and the caller removes the shift:
+\begin{equation}
+\sum_{i=1}^{n}w_ia_i=\sum_{i=1}^{n}c_ia_i-\sum_{i=1}^{n}a_i .
+\label{eq:shift}
+\end{equation}
+The correction depends only on the activations and is therefore evaluated once
+per matrix--vector product rather than once per row, $O(n)$ against $O(mn)$. Any
+replacement must expose the same quantity $\sum_i c_i a_i$. Identity
+\eqref{eq:shift} requires $c_i\le 2$; a code $c=3$ would contribute $3a_i$ while
+denoting $w=0$. We verify in \S\ref{sec:correct} that code~3 occurs zero times
+across all \num{2084044800} weights.
+
+\section{The t5b code}\label{sec:format}
+
+\subsection{Definition}
+A block occupies 32 bytes and carries $L=160$ ternary weights. For byte index
+$j\in\{0,\dots,31\}$ and digit index $k\in\{0,\dots,4\}$,
+\begin{equation}
+b_{j}=\sum_{k=0}^{4}c\!\left(w_{32k+j}\right)3^{k},
+\qquad c(w)=w+1\in\{0,1,2\}.
+\label{eq:pack}
+\end{equation}
+The interleave $32k+j$ is \code{i2\_s}'s own layout extended from four digits to
+five, so digit plane $k$ addresses 32 \emph{consecutive} activations and the
+memory access pattern is unchanged from the format replaced. The code is
+injective since $3^{5}=243\le 256$, and
+\begin{equation}
+b_{j}\;\le\;2\sum_{k=0}^{4}3^{k}=2\cdot 121=242 .
+\label{eq:bound242}
+\end{equation}
+Density is
+\begin{equation}
+\beta=\frac{8\ \text{bits}}{5\ \text{weights}}=\num{1.600},
+\end{equation}
+a factor $F=2/\num{1.6}=\num{1.25}$ fewer bytes than \code{i2\_s}.
+
+\subsection{Optimality among aligned radix-3 codes}
+Packing $k$ trits into $\lceil k\log_{2}3\rceil$ bits gives
+$\beta(k)=\lceil k\log_{2}3\rceil/k$. Restricting to codes that fit a machine
+word without straddling:
+
+\begin{center}
+\begin{tabular}{rrrl}
+\toprule
+$k$ & bits & $\beta$ & fits \\
+\midrule
+4  & 7  & 1.750 & byte, 1 bit wasted \\
+5  & 8  & \textbf{1.600} & byte, exactly \\
+9  & 15 & 1.667 & 16-bit word, 1 bit wasted \\
+10 & 16 & \textbf{1.600} & 16-bit word, exactly \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$k=5$ and $k=10$ tie and nothing aligned does better. We implement both;
+\S\ref{sec:lane} shows they differ by $1.5\times$ in throughput for reasons of
+SIMD lane width alone.
+
+\subsection{Tail}
+For $n$ not a multiple of $L$ the final block's unused slots take $c=1$
+($w=0$) and the corresponding activations are read from a zero-padded buffer, so
+both terms of~\eqref{eq:shift} are unaffected. Storage is
+\begin{equation}
+S(n)=32\left\lceil \frac{n}{160}\right\rceil\ \text{bytes},
+\end{equation}
+exactly \num{1.600} bits/weight at $K=\num{2560}$ and \num{1.6296} at
+$K=\num{6912}$; over the whole checkpoint \num{1.6076} including tail waste and
+the 32-byte per-tensor scale record \code{ggml} appends.
+
+\section{Kernel}\label{sec:kernel}
+
+\subsection{Digit recovery without a chain}
+With $q_{j}=\lfloor b/3^{j}\rfloor$ the digits satisfy
+\begin{equation}
+d_{j}=q_{j}-3q_{j+1},\qquad j=0,\dots,4,\quad q_{5}=0 .
+\label{eq:digits}
+\end{equation}
+A naive implementation derives $q_{j+1}$ from $q_{j}$, a serial dependence of
+length five. We obtain every $q_{j}$ directly from $b$, which
+\eqref{eq:bound242} makes possible.
+
+\begin{proposition}[sufficient range for exact magic division]
+Let $D\ge 2$ and let $M$ be any positive integer with $e:=MD-2^{16}\ge 1$. Then
+\begin{equation}
+\left\lfloor\frac{xM}{2^{16}}\right\rfloor=\left\lfloor\frac{x}{D}\right\rfloor
+\qquad\text{for every integer } 0\le x<\frac{2^{16}-e(D-1)}{e}.
+\label{eq:magic}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Write $x=qD+r$ with $0\le r<D$. Since $MD=2^{16}+e$,
+\[
+xM=q\left(2^{16}+e\right)+rM=q\,2^{16}+\left(qe+rM\right),
+\]
+so $\lfloor xM/2^{16}\rfloor=q+\lfloor (qe+rM)/2^{16}\rfloor$ and it suffices
+that $qe+rM<2^{16}$. Using $q\le x/D$ and $rM\le (D-1)M=2^{16}+e-M$,
+\[
+qe+rM\;\le\;\frac{xe}{D}+2^{16}+e-M ,
+\]
+which is below $2^{16}$ exactly when $xe/D<M-e$. Substituting
+$M=(2^{16}+e)/D$ gives $xe<2^{16}-e(D-1)$.
+\end{proof}
+
+The bound is sufficient, not tight. Since the operative question is finite ---
+does the identity hold for every $x\le\num{242}$? --- we also determine the
+exact first-failure point by exhaustive search over the whole 16-bit domain, and
+it is the exhaustive figure the implementation and its tests pin:
+
+\begin{center}
+\begin{tabular}{rrrrrrr}
+\toprule
+$j$ & $D=3^{j}$ & $M$ & $e$ & bound~\eqref{eq:magic} & first failure & margin over 242 \\
+\midrule
+1 & 3  & \num{21846} & 2   & $x<\num{32766}$ & $x=\num{32768}$ & $135.4\times$ \\
+2 & 9  & \num{7282}  & 2   & $x<\num{32760}$ & $x=\num{32768}$ & $135.4\times$ \\
+3 & 27 & \num{2428}  & 20  & $x<\num{3251}$  & $x=\num{3293}$  & $13.6\times$ \\
+4 & 81 & \num{811}   & 155 & $x<\num{343}$   & $x=\num{485}$   & $2.00\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The tightest case first fails at $x=485$, exactly twice the largest legal packed
+byte. All four quotients are therefore exact for every input the code can
+produce, each costs one \code{vpmulhuw}, and --- crucially --- the four are
+mutually independent, so the depth-five chain collapses to depth one and the
+multiply port rather than latency becomes the limit. Note $M=811$ is not the
+canonical $\lceil 2^{16}/81\rceil=810$; the implementation uses the larger
+constant, which has the smaller range and is still twice what the code can
+produce. The proposition covers it because its hypothesis is only $MD>2^{16}$.
+Digits then follow from~\eqref{eq:digits} using shifts and subtractions
+($3q=(q\ll 1)+q$) on the unconstrained integer ports.
+
+\subsection{Contraction and the accumulator bound}
+Digit plane $k$ is a register of 32 bytes in $\{0,1,2\}$, exactly the unsigned
+operand \code{vpmaddubsw} expects:
+\begin{equation}
+\text{acc}_{16}\mathrel{+}=\code{vpmaddubsw}\!\left(d_{k},\,a_{32k..32k+31}\right).
+\end{equation}
+A product is at most $2\times 128=256$ --- the bound the header and the code
+use, covering $a=-128$ --- and \code{vpmaddubsw} sums adjacent
+pairs, so a 16-bit lane grows by at most 512 per plane and $5\times 512=2560$
+per block. Folding to 32-bit every $\Phi$ blocks is safe iff
+\begin{equation}
+2560\,\Phi\le\num{32767}\iff\Phi\le\num{12.80},
+\label{eq:fold}
+\end{equation}
+hence $\Phi=12$. This is a \emph{worst-case} bound. \code{llama.cpp}'s own
+\code{i2\_s} kernel folds every 32 blocks with four planes, up to
+$128\times 508=\num{65024}$, and is correct only because signed activations
+cancel; \S\ref{sec:correct} shows that removing the cancellation makes it
+disagree with exact arithmetic in 200 of 200 cases.
+
+\subsection{Why bytes and not words}\label{sec:lane}
+The ten-trits-per-\code{uint16} code admits a kernel that never forms a digit.
+Substituting~\eqref{eq:digits} into $\sum_k d_ka_k$ and re-indexing,
+\begin{equation}
+\sum_{k=0}^{K-1}d_{k}a_{k}=q_{0}b_{0}+\sum_{j=1}^{K-1}q_{j}b_{j},
+\qquad b_{0}=a_{0},\quad b_{j}=a_{j}-3a_{j-1},
+\label{eq:telescope}
+\end{equation}
+so only the quotient chain and a transformed activation vector are needed, the
+latter computed once per matrix--vector product. The identity holds modulo
+$2^{32}$ rather than term by term: intermediate products are large and cancel.
+
+It is nonetheless slower by $1.5\times$, for reasons of lane width rather than
+radix. On \code{uint16} lanes the contraction must use \code{vpmaddwd}, covering
+16 lanes where \code{vpmaddubsw} covers 32, and the quotient chain competes for
+the same port. Per 160 weights the word variant issues 19 multiply-port
+instructions against the byte variant's 13, measuring \SI{29.83}{} against
+\SI{33.83}{}~GMAC/s per core.
+
+\subsection{Blocking for batched operation}
+For $n_{c}$ activation columns, decoding per column costs $n_{c}$ decodes.
+Blocking so a decoded plane is contracted against $N_{C}$ columns held in
+registers reduces the per-block cost from $N_{C}(\delta+5)$ to $\delta+5N_{C}$
+multiply-port instructions, $\delta=8$. At $N_{C}=8$ this is 48 instructions per
+\num{1280} multiply--accumulates, \num{26.7} MACs each against \code{i2\_s}'s
+\num{32}. Measured at $N_{C}\in\{2,4,8\}$: \num{50.51}, \num{63.54},
+\num{73.26}~GMAC/s. We deploy $N_{C}=8$; its register pressure (181 stack
+references per loop) costs less than the amortisation gains.
+
+\section{When a denser code pays}\label{sec:condition}
+
+Let baseline $A$ and candidate $B$ store the same weights at
+$\beta_{A}>\beta_{B}$ with $\mu_{A}<\mu_{B}$ binding-port instructions per
+multiply--accumulate. Write
+\begin{equation}
+F=\frac{\beta_{A}}{\beta_{B}},\qquad S=\frac{\mu_{B}}{\mu_{A}},
+\end{equation}
+and define the \emph{surplus} of the baseline,
+\begin{equation}
+\Sigma=\frac{\beta_{A}/(8B)}{\mu_{A}/\pi}=\frac{\pi\beta_{A}}{8B\mu_{A}} .
+\label{eq:surplus}
+\end{equation}
+If $\Sigma\le 1$ the baseline is arithmetic-bound and no $S>1$ can win. If
+$\Sigma>1$ it is transport-bound and, from~\eqref{eq:roofline}, $B$ is faster iff
+\begin{equation}
+\boxed{\;S<\Sigma\;}
+\label{eq:condition}
+\end{equation}
+in which case it runs a factor $\min(F,\Sigma/S)$ faster. The condition is a
+property of two hardware rates, not of the code, and both are measurable.
+
+\subsection{Measuring $\pi$}
+Eight independent dependence chains, so latency cannot bind, with the clock
+derived from a dependent add chain retiring one per cycle by construction:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+instruction & Gop/s & ops/cycle \\
+\midrule
+\code{vpmaddubsw} & 4.09 & 1.05 \\
+\code{vpmaddwd}   & 4.10 & 1.05 \\
+\code{vpmulhuw}   & 4.09 & 1.05 \\
+\code{vpmullw}    & 4.08 & 1.04 \\
+\code{vpand}      & 15.43 & 3.95 \\
+\code{vpaddw}     & 11.72 & 3.00 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Measured clock \SI{3.91}{\giga\hertz}. All four multiply-class instructions land
+on one port at 1.05 per cycle; the rest are three to four times more plentiful.
+This fixes $\pi=\num{4.09e9}\,\mathrm{s^{-1}}$ and identifies the binding
+resource unambiguously.
+
+\paragraph{Methodological note.} An earlier version of this measurement gave all
+eight chains identical seeds; the compiler proved them equal and kept one,
+eliminating \code{vpand} entirely and strength-reducing \code{vpaddw} into a
+multiply. It reported $\num{2.98e6}$ and \num{9.15} ops/cycle against a ceiling
+near 4. Only the physical impossibility of those figures exposed the defect.
+
+\subsection{Measuring $B$: the surplus is a function of core count}
+$B$ is a core's \emph{share}, not the socket's. Running the baseline kernel at
+\SI{256}{\kibi\byte} per thread (inside L2) and \SI{64}{\mebi\byte} per thread
+(four times one CCX's L3), one thread pinned per physical core:
+
+\begin{center}
+\begin{tabular}{rrrr}
+\toprule
+threads & arithmetic (GMAC/s) & transport (GB/s) & $\Sigma$ \\
+\midrule
+1 & 83.70  & 15.47 & 1.35 \\
+2 & 162.42 & 24.94 & 1.63 \\
+3 & 235.14 & 33.00 & 1.78 \\
+4 & 287.54 & 38.62 & 1.86 \\
+6 & 471.74 & 38.86 & \textbf{3.03} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Arithmetic scales $5.6\times$ across six cores, per core falling only
+\SI{6}{\percent}. Transport scales $2.5\times$ and is flat from four cores to
+six. The surplus therefore grows with core count for reasons independent of any
+kernel. For t5b, $S=\num{2.43}$ measured against $F=\num{1.25}$;
+by~\eqref{eq:condition} the code should lose at one, two and four threads and
+win at six, which is what \S\ref{sec:traffic} observes.
+
+\section{Experimental setup}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+CPU & AMD Ryzen 5 3600 (Zen 2), 6 cores / 12 threads \\
+\code{/proc/cpuinfo} & \code{avx2}, \code{fma}; \textbf{no AVX-512, no VNNI} \\
+Caches & L1d \SI{32}{\kibi\byte}/core, L2 \SI{512}{\kibi\byte}/core, L3 \SI{32}{\mebi\byte} in two CCX slices \\
+Memory & \SI{62}{\gibi\byte} \\
+Compiler & gcc 13.3.0, \code{-O3 -mavx2 -mfma -march=native} \\
+Model & \code{microsoft/bitnet-b1.58-2B-4T}, \num{2084044800} ternary weights, 210 tensors \\
+Second model & \code{jpacifico/Aramis-2B-BitNet-b1.58-i2s-GGUF}, independent fine-tune \\
+Harnesses & \code{llama-bench}, \code{llama-batched-bench}, \code{llama-perplexity} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The host is shared with an unrelated production workload whose load average
+rarely falls below \num{1.8}; within-arm spread ranges from \SI{2}{\percent} to
+\SI{146}{\percent} with load, comparable to the effect under study. Every
+comparison is paired with the arm order alternated, and headline figures are
+replicated across five independent invocations of the upstream benchmark.
+
+\section{Results}\label{sec:results}
+
+\subsection{Correctness}\label{sec:correct}
+
+\paragraph{Unit level.} \num{184228} assertions across five suites, zero
+failures. Kernels are checked against scalar references derived independently
+from the specification rather than from the implemented identities, so a shared
+derivation error cannot pass. Coverage includes exhaustive verification of the
+four magic-division identities over their whole legal range, deliberate 32-bit
+wraparound driven \num{4.96} times past $2^{31}$, extreme activations $\pm 127$,
+and every block and tail boundary.
+
+\paragraph{Model level, argmax.} Nine prompts across two models, greedy
+decoding, one binary, one seed: identical output by \code{diff}. A negative
+control confirms the comparison can fail.
+
+\paragraph{Model level, distribution.} Perplexity over 40 chunks of 512 tokens
+of WikiText-2 (\code{llama.cpp}'s own CI copy):
+\[
+\mathrm{PPL}_{\code{i2\_s}}=\num{96.8243}\pm\num{3.55673},\qquad
+\mathrm{PPL}_{\code{t5b}}=\num{96.8243}\pm\num{3.55673}.
+\]
+Not only the final estimates but all forty running estimates agree exactly, from
+$[1]\,\num{47.2744}$ to $[40]\,\num{96.8243}$; instrumentation confirms the arms
+differed (\num{51660} calls through the new path against zero). This compares a
+floating-point aggregate over $\num{2.05e4}$ forward passes rather than a
+decoded string.
+
+\paragraph{Code 3.} Absent: 0 of \num{2084044800} weights across all 210
+tensors, so~\eqref{eq:shift} holds model-wide.
+
+\paragraph{A defect in the baseline.} With activations uniformly at $\pm 127$,
+\code{llama.cpp}'s \code{i2\_s} AVX2 kernel disagrees with exact arithmetic in
+200 of 200 cases on two of seven tensors, every discrepancy a multiple of
+$2^{16}$ --- the overflow \eqref{eq:fold} forbids by construction in our kernel.
+Whether ordinary activations reach that state is not established; the mechanism
+is.
+
+\subsection{Kernel microbenchmark}
+One core, weights resident in L2 so transport cannot bind:
+
+\begin{center}
+\begin{tabular}{lrrrrrrr}
+\toprule
+kernel & GMAC/s & instr & mul & spills & weights & ceiling & of it \\
+\midrule
+\code{i2\_s} (upstream) & 81.93 & 21 & 4 & 0 & 128 & 131.4 & \SI{62}{\percent} \\
+t10 (word)              & 30.04 & 50.25 & 19.25 & 8.25 & 160 & 34.6 & \SI{87}{\percent} \\
+\textbf{t5b (byte)}     & \textbf{33.74} & 47 & 13 & 0 & 160 & 50.5 & \SI{67}{\percent} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The ceiling is $\pi\cdot(\text{weights}/\text{mul})$. t5b initially measured
+\num{24.36}~GMAC/s --- slower than t10 despite fewer multiplies --- which no
+end-to-end benchmark could diagnose; disassembly showed 44 stack references in a
+425-instruction function. One block per iteration with each plane contracted at
+the moment it exists gave 47 instructions, zero spills, \num{33.74}~GMAC/s,
+hence $S=\num{81.93}/\num{33.74}=\num{2.43}$.
+
+\subsection{Weight traffic of one token}\label{sec:traffic}
+Replaying one token's matrix operations over the model's real shapes and full
+\SI{940}{\mega\byte} footprint, best of five, arms rotated:
+
+\begin{center}
+\begin{tabular}{rrrrr}
+\toprule
+threads & \code{i2\_s} & t10 & t5b & t5b/\code{i2\_s} \\
+\midrule
+1 & \SI{34.57}{\milli\second} & 72.73 & 64.70 & 0.534 \\
+2 & 20.29 & 36.84 & 33.01 & 0.615 \\
+4 & 13.19 & 18.82 & 16.90 & 0.780 \\
+6 & 15.15 & 14.49 & \textbf{11.18} & \textbf{1.354} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The crossing matches~\eqref{eq:condition} with $S=\num{2.43}$ and the $\Sigma$
+of \S\ref{sec:condition}. Across all eight paired six-thread observations the
+median is $1.12\times$, seven of eight favouring t5b; best against best, noting
+\code{i2\_s} does not improve past four threads, is \SI{13.00}{\milli\second}
+against \SI{11.71}{\milli\second}.
+
+\subsection{End to end in \code{llama.cpp}}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+ & size & pp512 (t/s) & tg128 (t/s) \\
+\midrule
+\code{i2\_s} & \SI{1.10}{\gibi\byte} & $119.65\pm 2.27$ & $22.56\pm 1.26$ \\
+\textbf{t5b} & \textbf{\SI{1.00}{\gibi\byte}} & $\mathbf{135.45\pm 1.21}$ & $\mathbf{25.78\pm 0.87}$ \\
+ratio & 0.909 & \textbf{1.132} & \textbf{1.143} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Faster in five of five invocations on both measures; per-invocation ratios
+$1.096$, $1.112$, $1.119$, $1.253$, $1.132$ (prompt) and $1.099$, $1.133$,
+$1.123$, $1.242$, $1.143$ (generation).
+
+\paragraph{Prompt length.} $1.106$, $1.152$, $1.180$, $1.113$ at 64, 256, 1024
+and 2048 tokens: the advantage does not decay with length. We had predicted
+decay on the grounds that a prompt pass is arithmetic-bound; at these shapes the
+weights still stream from memory, so the byte saving remains live and the
+prediction was wrong in its premise.
+
+\paragraph{Concurrency.} Total throughput at 1, 2, 4, 8 parallel sequences:
+$1.041$, $1.041$, $1.027$, $1.097$. The advantage \emph{grows}: $N$ concurrent
+sequences turn generation into a matrix--matrix product with $N$ columns, across
+which the decode amortises.
+
+\paragraph{Across checkpoints.} On the independent fine-tune: identical output
+on three prompts, $1.120\times$ prompt and $1.075\times$ generation.
+
+\paragraph{Across depth.} Repeating the block stack yields a
+\num{4.50}\,B-parameter, 60-layer graph \code{llama.cpp} loads and runs with
+real attention and KV cache: $1.165\times$ and $1.129\times$, both margins clear
+of their error bars. That artefact is \emph{not a model} --- the same thirty
+blocks run twice --- and no quality claim is made from it.
+
+\subsection{A negative result on row tiling}
+Tiling four weight rows against one activation vector measures $1.19\times$ in
+cache and $0.52\times$ from memory. A tile of $R$ rows by $C$ columns loads each
+weight once and spends it on $RC$ contractions; a matrix--vector product has
+$C=1$, so tiling rows buys no reuse and merely reorders loads. Upstream draws
+the same line structurally: its \code{ggml\_gemv\_i2\_i8\_s} does not tile,
+while the $4\times 4$ tile lives in \code{ggml\_gemm\_i2\_i8\_s}.
+
+\section{Dead feed-forward neurons}\label{sec:dead}
+
+\SI{2.9036}{\percent} of all weight-matrix rows are identically zero --- an
+output neuron that cannot fire for any input.
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+tensor & dead rows & share \\
+\midrule
+$W_{\text{gate}}$ & \num{9870} / \num{207360} & \SI{4.76}{\percent} \\
+$W_{\text{up}}$   & \num{9870} / \num{207360} & \SI{4.76}{\percent} \\
+$W_{v}$           & 103 / \num{19200} & \SI{0.54}{\percent} \\
+$W_{q}$           & 4 / \num{76800} & \SI{0.01}{\percent} \\
+$W_{\text{down}},W_{k},W_{o}$ & 0 & \SI{0.00}{\percent} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+They concentrate at the front: \SI{43.59}{\percent} of layer 1's feed-forward
+neurons, \SI{27.58}{\percent} of layer 2's, \SI{14.77}{\percent} of layer 3's,
+near zero by layer 8. \textbf{In all thirty layers the dead index set of
+$W_{\text{gate}}$ equals that of $W_{\text{up}}$} --- not the same cardinality,
+the same indices. In a SwiGLU block, $h = W_{\text{down}}\!\left(\sigma(W_{\text{gate}}x)\odot W_{\text{up}}x\right)$,
+the two are combined element-wise, so a zero
+gate row renders the matching up row irrelevant and conversely; training removed
+them in pairs. $W_{\text{down}}$ has none, the same fact along the other axis:
+there a dead neuron is a dead \emph{column}.
+
+They survive fine-tuning exactly: against the independent fine-tune, 210 of 210
+tensors have identical dead index sets, all \num{19847} rows,
+\SI{100.00}{\percent}. Whatever removed them occurred in pre-training.
+
+Skipping the rows saves \SI{2.4380}{\percent} of weight bytes \emph{and} the same
+share of multiply--accumulates. Removing the neurons outright would save
+\SI{3.64}{\percent} --- a dead neuron also renders its $W_{\text{down}}$ column
+useless, $\num{9870}\times\num{7680}$ weights --- at zero cost to the
+element-wise product, but \emph{not} provably zero cost to the layer: BitNet
+places a sub-layer RMS norm between the product and $W_{\text{down}}$, and an
+RMS norm divides by the root mean over all \num{6912} entries, so deleting
+zeros changes the denominator. Skipping the rows in the kernel is exact;
+removing them is exact only with that divisor pinned to the original width. The
+route is \emph{not} blocked by the file format, which this work asserted for
+some hours without checking: \code{llama.cpp} reads
+\code{LLM\_KV\_FEED\_FORWARD\_LENGTH} through \code{get\_key\_or\_arr} into a
+per-layer array (\code{llama-model.cpp:1117}), so per-layer feed-forward widths
+are a first-class concept and the removal needs no format change and no kernel
+work. It is also \emph{unconditionally} exact on the product, precisely because
+the dead index sets coincide: with $\text{up}_i$ zero as well, the neuron
+contributes nothing for any activation.
+
+\section{Limitations}
+
+\paragraph{One microarchitecture, and the decisive property is absent from it.}
+All results are from a single Zen 2 part reporting \code{avx2} and \code{fma}
+and nothing else. \code{VPDPBUSD} collapses the contraction into one instruction
+while leaving the decode unchanged; by~\eqref{eq:surplus} this raises $S$ and
+lowers $\Sigma$, moving~\eqref{eq:condition} against a packed code. The
+\emph{Litespark} system, targeting VNNI and ARM \code{SDOT}, stores ternary
+weights at eight bits for precisely this reason. \textbf{The central result
+should be read as a property of AVX2 without VNNI until it is run on a VNNI
+part.} The code compiles for \code{-mavxvnni} here but cannot execute, and no
+such measurement is claimed.
+
+\paragraph{One model size and one architecture family.} No public ternary
+checkpoint larger than 2\,B exists. The synthetic 60-layer graph doubles weight
+traffic but not head count, hidden size or vocabulary.
+
+\paragraph{Measurement environment.} The host is shared and run-to-run spread is
+comparable to the effect. An earlier draft reported ``four runs out of four'' at
+$1.165\times$; those four were taken in the quietest window available, and four
+further runs at ordinary load include one the denser code loses. The headline is
+therefore the five-invocation replication.
+
+\paragraph{Verification scope.} The round trip is exact on all 210 tensors and
+all \num{2084044800} weights; what is limited to seven tensors is the
+dot-product comparison and the read-back from disk.
+
+\paragraph{Task benchmarks.} None. The format question does not admit one ---
+output is bit-identical --- but where this \emph{model} stands is answered only
+by perplexity, at $\num{96.8243}\pm\num{3.55673}$ against
+Qwen2.5-3B-Instruct's $\num{8.2837}\pm\num{0.21844}$ on the same corpus and
+harness, a factor of \num{11.7}. Perplexity across different tokenisers is
+loosely comparable at best; it is not loose by a factor of eleven.
+
+\paragraph{Engineering.} The blocked matrix--matrix kernel spills 181 times per
+loop at its chosen width; narrower widths spill less and measure slower. The
+type identifier used (43) is not reserved by upstream, so a stock
+\code{llama.cpp} cannot read the file by construction rather than by accident.
+
+\section{Conclusion}
+
+The gap between the \num{1.58} bits a ternary weight carries and the \num{2.00}
+it is stored in is recoverable on commodity AVX2 hardware without lookup tables.
+Five ternary values fit a byte at exactly \num{1.600} bits; all four radix-3
+quotients are extractable from that byte with one independent multiply each,
+because the byte is bounded by \num{242} and lies deep inside the exactness range
+of 16-bit magic multipliers; and the contraction proceeds on the digits, so no
+weight is materialised.
+
+Whether the resulting \SI{25}{\percent} reduction in weight traffic is
+profitable is not a property of the code. It is decided
+by~\eqref{eq:condition}, a comparison between a core's multiply-port throughput
+and its share of memory bandwidth, both measurable in minutes. On the part
+measured here the condition holds from four cores upward, and the deployed model
+is \SI{9}{\percent} smaller and \SIrange{13}{14}{\percent} faster with
+bit-identical output.
+
+The same inequality predicts the result will narrow on a part with VNNI, and an
+independent system built for such parts chose the opposite extreme of the same
+trade-off. That is not a caveat appended to a positive result; it is the result,
+which is that weight density is a hardware-dependent optimisation with a
+computable decision rule rather than a property of the model.
+
+\section*{Data and code availability}
+
+Every figure is recomputed by a script in the repository and recorded under
+\code{results/}, which the build gate re-derives and checks for drift on every
+run: \code{tensor\_structure.txt} and \code{real\_weights\_check.txt} (code
+histogram, absence of code 3, entropy); \code{bench\_ports.c} ($\pi$);
+\code{thread\_headroom.txt} ($\Sigma$); \code{weight\_density.txt} (kernel
+rates, instruction and spill counts); \code{bench\_token.c} (weight traffic);
+\code{inference\_t5b.txt} (end-to-end); \code{perplexity\_t5b.txt} (perplexity
+and the Qwen comparison); \code{dead\_neurons.txt} (\S\ref{sec:dead});
+\code{phase\_status.txt}. Format, kernels and tests are in
+\code{src\_modifications/}; the converter is \code{tools/gguf\_to\_t5b.py}; the
+integration is applied by \code{scripts/apply\_integration.py} and built by
+\code{Dockerfile.t5b}.
+
+\begin{thebibliography}{9}
+\bibitem{bitnet158} S.~Ma et al. \emph{The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits}, 2024.
+\bibitem{bitnet2b4t} Microsoft. \emph{BitNet b1.58 2B4T Technical Report}, 2025.
+\bibitem{tmac} J.~Wang et al. \emph{T-MAC: CPU Renaissance via Table Lookup for Low-Bit LLM Deployment}, EuroSys 2025.
+\bibitem{bitnetcpp} Microsoft. \emph{BitNet.cpp}: \code{GGML\_BITNET\_ARM\_TL1}, \code{GGML\_BITNET\_X86\_TL2}.
+\bibitem{litespark} \emph{Litespark Inference for CPUs: Ultra-Fast SIMD Framework for Ternary (1.58-bit) Language Models}, arXiv:2605.06485.
+\bibitem{llamacpp} G.~Gerganov et al. \emph{llama.cpp / ggml}.
+\bibitem{deepcompression} S.~Han, H.~Mao, W.~J.~Dally. \emph{Deep Compression: Compressing Deep Neural Networks with Pruning, Trained Quantization and Huffman Coding}, ICLR 2016.
+\bibitem{streamingllm} G.~Xiao et al. \emph{Efficient Streaming Language Models with Attention Sinks}, ICLR 2024.
+\bibitem{wikitext} S.~Merity et al. \emph{Pointer Sentinel Mixture Models}, 2016.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,473 @@
+THE 1.600-BIT FORMAT, INSIDE llama.cpp, GENERATING TOKENS
+==============================================================================
+
+  Reproduce:
+      # 1. convert the model  (about 4 minutes, needs ~1.1 GB free)
+      python3 tools/gguf_to_t5b.py models/ggml-model-i2_s.gguf \
+                                   models/ggml-model-t5b.gguf
+      # 2. build the image incrementally from the existing one
+      ssh root@<host> 'cd <repo> && docker build -f Dockerfile.t5b -t bitnet-t5b .'
+      # 3. run either model through the SAME binary
+      docker run --rm -v <repo>/models:/app/models:ro \
+        -v <repo>/assets/bitnet_chat_template.jinja:/work/template.jinja:ro \
+        bitnet-t5b /app/bitnet/build/bin/llama-cli \
+        -m /app/models/ggml-model-t5b.gguf \
+        --chat-template-file /work/template.jinja \
+        --override-kv tokenizer.ggml.eos_token_id=int:128009 \
+        --override-kv tokenizer.ggml.pre=str:llama3 \
+        -p 'Name the three primary colours of light.' \
+        -n 60 -t 4 --temp 0 --repeat-penalty 1.15 --repeat-last-n 128 \
+        --no-warmup -st --simple-io -s 1234
+
+  Everything before this file was a standalone replay of a token's matmuls.
+  This is the model.
+
+
+1. IT LOADS AND IT ANSWERS
+------------------------------------------------------------------------------
+
+  > Name the three primary colours of light.
+
+  1. The primary colors of light are blue, green, and red.
+  [bitnet-t5b] type=43 bits/weight=1.600 calls=0 sgemm=14280
+
+  Same answer as the i2_s model, and it terminated on its own after twelve
+  tokens against -n 60. The counter line is the evidence that the new path ran
+  rather than being merely linked: 14,280 calls through the sgemm route, and
+  type 43 is the enum value tools/gguf_to_t5b.py writes into the file.
+
+  OUTPUT IDENTITY, five prompts, greedy decoding, natural termination, the same
+  binary and the same seed with one variable changed -- which model file:
+
+      "Name the three primary colours of light."     IDENTICAL
+      "What is the capital of France?"               IDENTICAL
+      "How many legs does a spider have?"            IDENTICAL
+      "Give one reason plants are green."            IDENTICAL
+      a 130-token passage + question (exercises the GEMM)  IDENTICAL
+
+  Byte for byte, by diff, and re-checked after the GEMM was blocked -- that path
+  processes every prompt, so a defect there would corrupt everything downstream
+  of it. The first version of this check compared two EMPTY extractions for two
+  of the prompts and reported IDENTICAL: llama.cpp prints the counter line
+  flush against the answer, and a filter that dropped lines containing
+  "[bitnet-" dropped the answer with it. It now strips the suffix instead of the
+  line, refuses to compare anything under ten bytes, and carries a negative
+  control -- two DIFFERENT prompts, which must and do compare unequal. A check
+  that cannot fail is not a check, and that one could not.
+
+
+2. GENERATION THROUGHPUT: 30 PAIRED RUNS
+------------------------------------------------------------------------------
+
+  Same prompt, same seed, --ignore-eos so the count is fixed, arms alternated
+  every pair so neither is always first. Tokens per second, generation only.
+
+      threads   pairs   i2_s     t5b      ratio    t5b wins
+         4       15     21.65    22.89    1.057x    12 of 15
+         6       15     21.72    21.94    1.010x     6 of 15
+
+  Broken out by how many tokens were generated:
+
+      threads   n=60      n=150     n=400
+         4      1.078x    1.050x    1.043x
+         6      0.987x    1.008x    1.038x
+
+  At four threads -- the setting every published measurement in this project
+  uses, chosen because a live trading bot shares the machine -- the denser
+  format generates 5.7% faster and wins 12 of 15 paired runs. At six it is a
+  wash.
+
+  The advantage shrinks as the generation gets longer at four threads, which is
+  what it should do: attention and the KV cache grow with context and are
+  identical in both arms, so they dilute a saving that lives entirely in the
+  weight matmuls.
+
+
+3. PROMPT PROCESSING: IT COST HALF, AND THEN IT DID NOT
+------------------------------------------------------------------------------
+
+  FIRST MEASUREMENT, before the GEMM was blocked:
+
+      i2_s   91.9 to 114.7 t/s
+      t5b    41.3 to  65.7 t/s        about 0.48x
+
+  That was read as the predicted cost of an arithmetic-bound GEMM against a
+  format that needs 2.4x the arithmetic per weight, and paper 5.10 had said in
+  advance that this is where a denser format loses. The prediction was right
+  about the direction and wrong about the size, because the code had a defect
+  the prediction was covering for.
+
+  THE DEFECT. ggml_t5b_glue.c's gemm body ran
+
+      for (r0 = 0; r0 < nc; r0 += 32)          /* rows */
+          for (col = 0; col < nr; ++col)       /* activation columns */
+              ternary_t5b_gemv_avx2(vx + r0*rowbytes, vy + col*n, ...);
+
+  Its comment argued, correctly, that row-chunk-outside keeps the weight BYTES
+  in L2 across the column loop. But it re-ran the whole decode for every column:
+  the four vpmulhuw per block, the digit subtractions, the plane recombination,
+  N times over the same weights. For i2_s that would be nearly free -- its
+  decode is three shifts and four masks. For t5b the decode IS the cost, and
+  multiplying it by N is exactly backwards.
+
+  THE FIX is to block the third dimension as well: decode each weight block ONCE
+  and contract it against NC activation columns held in registers, so the cost
+  per 32-byte block goes from NC*(decode + 5 contractions) to decode + NC*5
+  contractions. At NC = 8 that is 48 multiply-port instructions per 1280 MACs --
+  26.7 MACs each, against i2_s's 32 -- where the column loop was getting 12.3.
+
+  SECOND MEASUREMENT, 12 paired runs at four threads, a 130-token prompt so the
+  prompt pass is a real GEMM, arms alternated every pair:
+
+      i2_s   mean 110.2 t/s
+      t5b    mean 127.8 t/s        1.160x, t5b faster in 10 of 12 pairs
+
+  From 0.48x to 1.16x. It beats the shipped format rather than merely recovering,
+  and by more than the 0.83x the multiply-port arithmetic alone predicts: at
+  these shapes -- 2560 and 6912 rows against K = 2560 and 6912 -- the weights
+  still stream from DRAM, so the 1.244x byte saving applies on top of the now
+  amortised decode instead of being irrelevant. The regime is not purely
+  arithmetic-bound after all, which is precisely what the first measurement could
+  not distinguish from a bad loop.
+
+  Generation is unchanged by this, and must be: N = 1 there, so there is nothing
+  to amortise and the blocked path is never taken.
+
+  THE BLOCK WIDTH, verified rather than accepted. NC = 8 was the width the
+  implementation shipped with, and the register argument says to distrust it:
+  eight int32 accumulators plus a digit plane plus the quotients against sixteen
+  ymm. objdump agrees that it is tight -- stack-touching moves in the function
+  run 53, 163 and 449 for NC = 2, 4 and 8, and the main loop body carries 181
+  of them in 786 instructions. This kernel has been wrecked by spilling before,
+  at 44 of them.
+
+  Measured anyway, 20,000 rows of K = 2560 against 64 activation columns, one
+  core, best of five:
+
+      NC = 2    50.51 GMAC/s
+      NC = 4    63.54
+      NC = 8    73.26
+
+  The spills cost less than the amortisation gains, so the widest width wins and
+  the shipped default is right. For scale, the same kernel down the GEMV path --
+  one column, nothing to amortise -- runs at 33.74. Blocking the columns is
+  worth 2.2x, and it is worth it even while spilling 181 times per loop.
+
+4. WHY THE MODEL GAINS LESS THAN THE REPLAY PROMISED
+------------------------------------------------------------------------------
+
+  results/weight_density.txt measures the matmuls alone and reports 1.11x best
+  against best. The model gives 1.057x. The difference is not a discrepancy --
+  it is the answer to a question the replay could not ask.
+
+  At 21.9 tokens per second a token takes 45.7 ms. The replay puts the whole
+  token's worth of i2_s matmuls at about 14 ms at six threads. So weight
+  streaming is roughly 30% of a token and the other 70% is attention, the KV
+  cache, RoPE, the norms, the f32 -> i8 activation quantisation, thread
+  barriers and graph overhead -- all identical between the arms.
+
+  Read as bandwidth: 521 MB per token in 45.7 ms is 11.4 GB/s, against the 38.9
+  GB/s results/thread_headroom.txt measures this machine delivering. llama.cpp's
+  generation loop on this model is NOT running into the memory wall. It is
+  running into everything else, and it uses less than a third of the bandwidth
+  available to it.
+
+  That is the honest limit of the design document's premise on this host. The
+  memory wall is real, the compression is real, the kernel is exact and it is
+  faster where it is exercised -- and the model only spends a third of its time
+  there, so a 20% cut in weight bytes buys 5.7% of a token and not 25%.
+
+
+4a. UPSTREAM'S OWN BENCHMARK TOOL
+------------------------------------------------------------------------------
+
+  Every throughput figure above is a shell loop around llama-cli written by the
+  party making the claim. llama.cpp ships llama-bench for exactly this, with
+  repetitions and a standard deviation, and the base image did not carry it --
+  the Dockerfile names the llama-cli target specifically. Dockerfile.t5b now
+  builds both.
+
+      docker run --rm -v <repo>/models:/app/models:ro bitnet-t5b \
+        /app/bitnet/build/bin/llama-bench \
+        -m /app/models/ggml-model-i2_s.gguf -m /app/models/ggml-model-t5b.gguf \
+        -t 4 -p 512 -n 128 -r 5
+
+      model                     size      test     t/s
+      bitnet-b1.58 2B  i2_s   1.10 GiB   pp512   119.65 +/- 2.27
+      bitnet-b1.58 2B  i2_s   1.10 GiB   tg128    22.56 +/- 1.26
+      bitnet-b1.58 2B  t5b    1.00 GiB   pp512   135.45 +/- 1.21
+      bitnet-b1.58 2B  t5b    1.00 GiB   tg128    25.78 +/- 0.87
+
+      prompt processing  1.132x        token generation  1.143x
+
+  Both margins clear their standard deviations without overlap: 135.45 - 1.21 =
+  134.24 against 119.65 + 2.27 = 121.92, and 24.91 against 23.82.
+
+  REPLICATED, because one invocation with five internal repetitions is still one
+  sample of the machine's condition. Five invocations, with the order the two
+  models are loaded in ALTERNATED so that neither can benefit from going first:
+
+      invocation   i2_s pp   t5b pp    i2_s tg   t5b tg    pp ratio  tg ratio
+          1        118.94    130.32     24.31    26.72      1.096     1.099
+          2        123.30    137.16     22.89    25.94      1.112     1.133
+          3        120.33    134.60     22.59    25.38      1.119     1.123
+          4        103.15    129.26     20.30    25.22      1.253     1.242
+          5        119.65    135.45     22.56    25.78      1.132     1.143
+
+      median                                                1.119     1.133
+
+  t5b is faster in 5 of 5 invocations on both measures. Invocation 4 is the
+  outlier in both columns and it is the one taken as the host's load average
+  climbed past 7; it moves the i2_s arm, not the t5b arm, which is what
+  contention does to the more bandwidth-hungry of two workloads.
+
+  These are HIGHER than the 1.16x and 1.06x measured through llama-cli above,
+  and the reason is scope rather than luck: llama-bench generates into an empty
+  context with no chat template, so a smaller share of each token goes to
+  attention and prompt handling, and a larger share to the weights this format
+  makes cheaper. Both are honest and they answer different questions -- what the
+  format is worth to the matmuls, and what it is worth to a user typing at a
+  chat prompt.
+
+
+4a3. CONCURRENCY, WHICH WAS LISTED AS UNTESTED AND WAS A BUILD TARGET AWAY
+------------------------------------------------------------------------------
+
+  Paper 6.1 said "what is still untested is a server workload with many
+  concurrent sequences". llama.cpp ships llama-batched-bench for exactly that,
+  and the only reason it had not been run is that the image did not carry it --
+  two lines in Dockerfile.t5b. Saying "untested" without checking whether the
+  tool was two lines from existing is the same mistake as reporting a blocker
+  without probing it.
+
+      llama-batched-bench -m <model> -c 4096 -b 2048 -ub 512 \
+        -npp 128 -ntg 128 -npl 1,2,4,8 -t 4
+
+      seqs   S_PP t/s          S_TG t/s          total t/s
+             i2_s    t5b       i2_s    t5b       i2_s    t5b     ratio
+        1   121.56  139.62     22.22   22.75     37.57  39.12    1.041x
+        2   119.92  143.30     34.57   34.68     53.67  55.85    1.041x
+        4   120.81  116.08     50.39   53.27     71.12  73.03    1.027x
+        8   123.17  140.09     59.40   64.10     80.15  87.95    1.097x
+
+  THE ADVANTAGE GROWS WITH CONCURRENCY, and the concern this was run to test was
+  that it would shrink. The standing worry -- carried in 6.1 and in section 3 of
+  this file -- was that concurrency raises arithmetic intensity by a different
+  route than prompt length does, and that a format costing more arithmetic per
+  weight loses as intensity rises.
+
+  It does the opposite, for a mechanical reason: B parallel sequences turn
+  generation into a GEMM with B columns, and the blocked GEMM amortises the
+  decode across exactly those columns. The same fix that took prompt processing
+  from 0.48x to 1.16x is what makes eight concurrent sequences the best of the
+  four settings, at 1.097x on total throughput and 1.079x on generation alone.
+
+  The B=4 prompt cell is 0.961x against 1.14x to 1.20x at B=1, 2 and 8. One
+  invocation per model, no repetition; it is an outlier in a single run and is
+  printed rather than smoothed.
+
+4b. DOES IT TRANSFER TO A LARGER MODEL?
+------------------------------------------------------------------------------
+
+  Mechanically, yes and without conditions: the packing is per-row, needs only
+  that the weights be ternary, and handles any K -- the model's own 2560 and
+  6912 are respectively a whole number of 160-weight blocks and 43 blocks plus a
+  32-weight tail, and both are covered by the same code and the same tests.
+
+  Economically it has to be measured, because two effects pull against each
+  other. Generation reads every weight once per token, so a bigger model is more
+  memory-bound and should favour the denser format; but the denser format's
+  kernel is arithmetic-bound and has proportionally more work to do as well.
+
+  src_modifications/bench/bench_token.c now takes a scale factor that allocates
+  that many times the model's tensors -- a deeper model at the same layer
+  shapes. At six threads, three runs each:
+
+      scale   ternary weights   i2_s bytes/token   t5b / i2_s
+        1        2.08 G             521 MB         1.135, 1.068, 1.038
+        4        8.34 G            2084 MB         1.063, 1.087, 1.027
+
+  1.080 against 1.059 -- flat across a fourfold increase, and the two sets
+  overlap. The advantage is a constant factor, not something that grows or
+  decays with depth, which is the useful form of the answer: it is not a
+  small-model artefact and it is not a promise that gets better with scale.
+
+  AND THE SAME QUESTION ASKED OF llama.cpp ITSELF. The replay above is a
+  harness. tools/gguf_deepen.py builds a GGUF whose block stack is repeated --
+  every blk.N.* copied to blk.(N+30).*, block_count 30 -> 60 -- so llama.cpp
+  loads it, reports 4.50 B parameters, and runs it with a real 60-layer graph,
+  real attention and a real KV cache.
+
+      model                        size       pp512            tg128
+      deep60 synthetic i2_s      1.59 GiB   55.55 +/- 4.40   14.53 +/- 0.41
+      deep60 synthetic t5b       1.39 GiB   64.71 +/- 2.03   16.40 +/- 0.72
+                                            1.165x           1.129x
+
+  Both margins separate: 62.68 against 59.95, and 15.68 against 14.94. Against
+  the real 2.41 B model's 1.132x and 1.143x, that is the same advantage at 1.9x
+  the parameters -- pp a little better, tg a little worse, neither outside the
+  spread.
+
+  THE OUTPUT OF THAT MODEL IS WORTHLESS AND NO CLAIM IS MADE ABOUT IT. Running
+  the same thirty blocks twice produces text; it is not a 4.5 B model and the
+  tool prints "NOT A MODEL" when it writes one. What is real is every quantity a
+  throughput benchmark measures: weight bytes per token, matmul shapes, the cost
+  of a 60-layer graph, thread scheduling. It is an honest instrument for "does
+  the advantage survive at twice the weight footprint" and a dishonest one for
+  anything else.
+
+  STILL NOT TESTED: an actually larger TRAINED ternary model, which would differ
+  in more than depth -- head count, hidden size, vocabulary. None exists
+  publicly.
+
+
+4a2. THE LENGTH SWEEP, WHICH REFUTES A PREDICTION MADE HERE
+------------------------------------------------------------------------------
+
+  pp512 was the only batched measurement, and paper 6.1 said so. llama-bench
+  sweeps it directly:
+
+      docker run ... llama-bench -m <i2_s> -m <t5b> -t 4 \
+        -p 64,256,1024,2048 -n 32,256 -r 3
+
+      test      i2_s                t5b                 ratio
+      pp64      123.36 +/- 4.54     136.47 +/- 2.66     1.106x
+      pp256     124.21 +/- 2.08     143.10 +/- 0.25     1.152x
+      pp1024    111.22 +/- 5.75     131.24 +/- 0.30     1.180x
+      pp2048    103.40 +/- 2.15     115.13 +/- 3.88     1.113x
+      tg32       24.53 +/- 0.38      23.52 +/- 0.30     0.959x
+      tg256      22.95 +/- 0.60      25.69 +/- 0.24     1.119x
+
+  PROMPT PROCESSING WINS AT EVERY LENGTH, and this file predicted it would not.
+  Section 3 argues that a prompt pass is a GEMM, that the work is
+  arithmetic-bound, and that a format costing more arithmetic per weight should
+  therefore lose there -- and after the third dimension was blocked it went to
+  1.16x at 512 and the argument was left standing as an explanation of why the
+  win must be small and must shrink with length. It does not shrink. It peaks at
+  1024 and is still 1.113x at 2048.
+
+  The argument was wrong in its premise: at these shapes the weights are still
+  being streamed from DRAM even in a GEMM, so the 1.244x byte saving is live
+  across the whole range and the amortised decode no longer eats it. "Purely
+  arithmetic-bound" was an assumption, and 2048-token prompts do not reach it on
+  this machine.
+
+  GENERATION AT 32 TOKENS LOSES, 0.959x, and the error bars separate:
+  24.53 - 0.38 = 24.15 against 23.52 + 0.30 = 23.82. At 128 and 256 tokens it
+  wins (1.143x, 1.119x). Thirty-two tokens is short enough that per-run fixed
+  cost is a visible share of the measurement, and this file does not have a
+  mechanism for the sign flip -- it is reported because it is what the tool
+  returned, not because it is understood.
+
+4b2. A SECOND MODEL, WITH WEIGHTS NEITHER THE CONVERTER NOR THE KERNEL HAS SEEN
+------------------------------------------------------------------------------
+
+  Section 4b says no larger ternary GGUF exists publicly. A second one of the
+  same size does: jpacifico/Aramis-2B-BitNet-b1.58-i2s-GGUF, an independent
+  fine-tune. It is the test that removes "one model" as a single-sample risk
+  even though it cannot remove "one size".
+
+  IT DOES NOT LOAD, AND NOT BECAUSE OF ANYTHING HERE. Unconverted, straight from
+  the hub:
+
+      llama_model_load: error loading model: unknown model architecture: 'bitnet-25'
+
+  The converted file fails identically, which is the useful half of that
+  observation -- the converter is not implicated. 'bitnet-25' is a metadata
+  string. Against microsoft/bitnet-b1.58-2B-4T, read with gguf_inspect.py:
+
+      tensor count          332 vs 332
+      identical names       yes, all 332
+      shape or type diffs   0
+      block_count           30 vs 30
+      embedding_length      2560 vs 2560
+      rope.freq_base        500000.0 vs 500000.0
+
+  Every tensor and every structural parameter agrees. The architecture string
+  also prefixes every architecture-scoped key, so llama.cpp looks for
+  `bitnet-b1.58.block_count` in a file spelling it `bitnet-25.block_count` and
+  refuses before reading a weight. tools/gguf_retag_arch.py rewrites the string
+  and the eleven prefixed keys, copies tensor data byte for byte, and refuses to
+  run without --i-checked so that a relabel cannot be mistaken for a conversion.
+  The retagged file is 1,187,801,280 bytes -- byte for byte the size of the
+  Microsoft one, the 32-byte difference having been the shorter string.
+
+  THE RESULT. Same binary, same seed, one variable: which model file.
+
+      "Name the three primary colours of light."   IDENTICAL   (57 bytes)
+      "What is the capital of France?"             IDENTICAL   (146 bytes)
+      "How many legs does a spider have?"          IDENTICAL   (374 bytes)
+      negative control: two different prompts compare unequal
+
+  The answers differ from the Microsoft model's on the same prompts, which is
+  the check that these are genuinely other weights and not the same file twice.
+
+      model              size      pp512              tg128
+      aramis i2_s      1.10 GiB   116.87 +/- 4.13    23.16 +/- 1.07
+      aramis t5b       1.00 GiB   130.89 +/- 6.02    24.89 +/- 1.14
+                                  1.120x             1.075x
+
+  pp separates cleanly: 130.89 - 6.02 = 124.87 against 116.87 + 4.13 = 121.00.
+  tg does NOT, on this single invocation: 23.75 against 24.23, an overlap. The
+  Microsoft model's tg was replicated over five invocations and separated in all
+  five; this one has one invocation and is reported as what it is.
+
+  So the format, the converter and the kernel transfer to weights they have
+  never seen, at the same 102.2 MB saving and a comparable speedup. What that
+  does not do is answer the size question, which remains open for want of a
+  model that exists.
+
+4c. HOW MUCH FURTHER COULD IT BE COMPRESSED?
+------------------------------------------------------------------------------
+
+  Measured on the real weights, model-wide (results/tensor_structure.txt):
+
+      scheme                                     bits/weight   vs 1.600   vs i2_s
+      dense base-3, what this ships                 1.6000       0.00%    20.00%
+      zero-skip at 1.600, best B=160                1.5672       2.05%    21.64%
+      dense base-3 + 1 skip bit per ROW             1.5613       2.42%    21.93%
+      order-0 arithmetic, one table per tensor      1.5553       2.80%    22.24%
+      order-1 arithmetic, row-major context         1.5483       3.23%    22.58%
+      order-0 arithmetic, one table per row         1.5475       3.28%    22.62%
+      enumerative, best B=128                       1.5182       5.11%    24.09%
+
+  The order-0 entropy of the real distribution is 1.560 bits -- 42.2% of the
+  weights are zero, which is why it sits below log2(3) = 1.585. So 1.600 is 2.6%
+  above the entropy floor and the whole remaining prize is 5.11%.
+
+  What each step costs is the point. Every scheme below 1.5672 needs a decoder
+  that is not four vpmulhuw: arithmetic coding is serial by construction and
+  cannot be lane-parallel at all, and enumerative coding needs a rank/unrank of
+  combinations per block. The kernel they would have to keep up with is running
+  at 632 million 128-weight blocks per second. Trading a 2-to-5% byte saving for
+  a decoder an order of magnitude more expensive inverts the only trade that
+  made 1.600 worth having.
+
+  The one exception worth noting is the row skip flag at 1.5613, which needs no
+  entropy coder at all -- it exists because entire rows really are zero in some
+  tensors (3.139% of blocks in blk.7.ffn_gate, identical at block sizes 16, 32
+  and 128, against a binomial expectation of 4.7e-13). A dead output neuron
+  costs nothing to skip. It is 2.42% and it is the only cheap one left.
+
+5. WHAT THIS DOES AND DOES NOT ESTABLISH
+------------------------------------------------------------------------------
+
+  Established. A GGUF at 1.600 bits per ternary weight loads in llama.cpp,
+  generates text identical to the 2.000-bit original on every prompt tried, and
+  at four threads does so 5.7% faster over 15 paired runs. The model file is
+  102.2 MB smaller. The i2_s path is untouched and remains the control arm --
+  both models run through the same binary.
+
+  Not established.
+  - One host, one model, one microarchitecture, and no VNNI. The whole result
+    turns on the ratio between a core's multiply-port throughput and its share
+    of memory bandwidth.
+  - Quality beyond exact output identity on four short prompts. Identity is a
+    stronger check than a benchmark score, but four prompts is four prompts.
+  - Anything about batch inference or long prompts, where section 3 says the
+    format costs about half.
+  - The 8-pair run at n=300 and six threads that preceded this one gave 0.98x.
+    It is not in the table above because it used a different prompt and a
+    different token count, and it is recorded here rather than dropped: the
+    run-to-run spread on this host is comparable to the effect, which is why
+    the table has 30 pairs and not 8.

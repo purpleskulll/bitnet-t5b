@@ -1,0 +1,120 @@
+DEAD FFN NEURONS IN ggml-model-i2_s.gguf
+==========================================================================
+
+  Reproduce: python3 tools/dead_neurons.py models/ggml-model-i2_s.gguf
+
+  A ternary weight matrix row that is entirely zero is an output
+  neuron that can never fire. Nothing here prunes it; this file
+  measures how many there are, because the number is structural.
+
+1. HOW MANY
+--------------------------------------------------------------------------
+
+    rows entirely zero    19,847 of 683,520   (2.9036 %)
+    weights in them       50,808,320 of 2,084,044,800   (2.4380 %)
+    at 1.600 bits that is 10.2 MB of 416.8 MB
+
+    by tensor kind:
+      ffn_gate         9,870 of 207,360 rows  (  4.76 %)
+      ffn_up           9,870 of 207,360 rows  (  4.76 %)
+      attn_v             103 of  19,200 rows  (  0.54 %)
+      attn_q               4 of  76,800 rows  (  0.01 %)
+      ffn_down             0 of  76,800 rows  (  0.00 %)
+      attn_k               0 of  19,200 rows  (  0.00 %)
+      attn_output          0 of  76,800 rows  (  0.00 %)
+
+2. THEY COME IN PAIRS, IN EVERY LAYER
+--------------------------------------------------------------------------
+
+    layers where ffn_gate's dead-row SET equals ffn_up's:  30 of 30
+
+    Not the same count -- the same INDICES. In a SwiGLU feed-forward
+    block gate and up are multiplied element-wise, so a dead gate row
+    makes the matching up row irrelevant and the reverse. Training
+    zeroed them together. ffn_down has none, which is the same fact
+    from the other side: there a dead neuron is a COLUMN, not a row.
+
+3. THEY ARE CONCENTRATED IN THE EARLY LAYERS
+--------------------------------------------------------------------------
+
+    layer   ffn_gate dead     ffn_up dead     share
+       0       330 / 6,912      330 / 6,912     4.77 %
+       1     3,013 / 6,912    3,013 / 6,912    43.59 %
+       2     1,906 / 6,912    1,906 / 6,912    27.58 %
+       3     1,021 / 6,912    1,021 / 6,912    14.77 %
+       4       616 / 6,912      616 / 6,912     8.91 %
+       5       307 / 6,912      307 / 6,912     4.44 %
+       6       189 / 6,912      189 / 6,912     2.73 %
+       7       217 / 6,912      217 / 6,912     3.14 %
+       8       140 / 6,912      140 / 6,912     2.03 %
+       9        67 / 6,912       67 / 6,912     0.97 %
+      10        22 / 6,912       22 / 6,912     0.32 %
+      11        38 / 6,912       38 / 6,912     0.55 %
+      12        33 / 6,912       33 / 6,912     0.48 %
+      13        35 / 6,912       35 / 6,912     0.51 %
+      14        25 / 6,912       25 / 6,912     0.36 %
+      15        35 / 6,912       35 / 6,912     0.51 %
+      16        64 / 6,912       64 / 6,912     0.93 %
+      17       106 / 6,912      106 / 6,912     1.53 %
+      18       149 / 6,912      149 / 6,912     2.16 %
+      19       204 / 6,912      204 / 6,912     2.95 %
+      20       206 / 6,912      206 / 6,912     2.98 %
+      21       148 / 6,912      148 / 6,912     2.14 %
+      22        74 / 6,912       74 / 6,912     1.07 %
+      23        71 / 6,912       71 / 6,912     1.03 %
+      24        99 / 6,912       99 / 6,912     1.43 %
+      25        91 / 6,912       91 / 6,912     1.32 %
+      26       117 / 6,912      117 / 6,912     1.69 %
+      27       182 / 6,912      182 / 6,912     2.63 %
+      28       145 / 6,912      145 / 6,912     2.10 %
+      29       220 / 6,912      220 / 6,912     3.18 %
+
+4. WHAT IT IS WORTH, AND WHY IT IS NOT TAKEN
+--------------------------------------------------------------------------
+
+    Skipping the dead rows saves 2.44 % of weight bytes AND the
+    same share of multiply-accumulates -- both, because the row is
+    neither read nor computed. On top of the 20 % the 1.600-bit
+    packing already saves, that is 10.2 MB more.
+
+    Removing the neurons outright would save more: a dead neuron also
+    makes its COLUMN of ffn_down useless, so
+    9,870 neurons x 7,680 weights = 75.8 M, 3.64 % of the model,
+    at provably zero quality cost because they are already zero.
+
+    That route is NOT blocked by the file format. This project said it
+    was, for some hours, without checking. llama.cpp reads
+    LLM_KV_FEED_FORWARD_LENGTH through get_key_or_arr into a per-layer
+    array -- llama-model.cpp:1117, llama-hparams.h:84 and :314 -- so
+    per-layer FFN widths are a first-class concept and the removal
+    needs no format change, no new tensor type and no kernel work.
+
+    It is also EXACTLY lossless, and unconditionally so, precisely
+    because section 2 holds: with the gate and up dead sets equal,
+    h_i = f(gate_i) * up_i = f(0) * 0 = 0 for ANY activation f, since
+    up_i is zero as well. The neuron contributes nothing and its
+    ffn_down column is multiplied by zero.
+
+5. THE SAME NEURONS SURVIVE A FINE-TUNE, EXACTLY
+--------------------------------------------------------------------------
+
+    against aramis2-i2_s.gguf
+    tensors with IDENTICAL dead-row index sets  210 of 210
+    dead rows                                   19,847 vs 19,847
+    at the same indices                         19,847 (100.00 %)
+
+    Not the same count -- the same rows, every one of them. The
+    second model is an independent fine-tune of the first, and it
+    revived nothing. Whatever killed these neurons happened in
+    pre-training and fine-tuning did not touch it, which makes a
+    skip scheme's benefit portable across derivatives of a base
+    rather than a property of one checkpoint.
+
+6. WHAT THIS IS NOT
+--------------------------------------------------------------------------
+
+    Not a claim about training, or about whether these neurons were
+    ever useful. Not a quality result: nothing was pruned and no
+    model re-run. And dead here means exactly all-weights-zero, which
+    is sufficient for a silent neuron and not necessary -- a row of
+    tiny non-zero weights is invisible to it.

@@ -1,0 +1,140 @@
+HOW MUCH ARITHMETIC IS FREE AT THE REAL MODEL'S WORKING SET
+==============================================================================
+
+  Reproduce:
+      make -C src_modifications build/obj/ggml_i2s_ternary.o
+      gcc -O3 -mavx2 -mfma -march=native -std=c11 -pthread \
+          src_modifications/bench/bench_threads.c \
+          src_modifications/build/obj/ggml_i2s_ternary.o \
+          -o src_modifications/build/bench_threads
+      ./src_modifications/build/bench_threads 0.5
+
+  Host: AMD Ryzen 5 3600, 6 physical cores / 12 threads, L2 512 KiB per core,
+  L3 32 MiB in two 16 MiB CCX slices. Kernel measured: upstream llama.cpp's
+  own AVX2 i2_s branch, verbatim, from src_modifications/ggml_i2s_ternary.c.
+
+
+1. WHY THIS MEASUREMENT WAS MISSING, AND WHY IT DECIDES SOMETHING
+------------------------------------------------------------------------------
+
+  Every throughput figure this project has ever published is single-threaded.
+  That was the right scope while the question was "which kernel does more
+  arithmetic per second". It is the wrong scope for the question that is now
+  open: would reading FEWER WEIGHT BYTES make the model faster?
+
+  That question has no kernel-local answer. It depends on which resource is
+  binding, and llama.cpp runs the model on every core. results/bench_code_kernel
+  .txt already located the single-threaded crossover -- 83.00 GMAC/s at 20.75
+  GB/s when 4 MiB of weights fit the cache, 59.33 GMAC/s at 14.83 GB/s when 256
+  MiB do not -- but 14.83 GB/s is ONE core's share of the memory system, not the
+  socket's. Add cores and that share falls while each core's arithmetic capacity
+  stays exactly where it was.
+
+  So the surplus is a function of thread count, and it has never been measured.
+
+
+2. THE ARMS
+------------------------------------------------------------------------------
+
+  For each thread count the SAME per-thread work runs at two footprints:
+
+      cache arm    256 KiB of weights per thread. Fits the 512 KiB L2 slice, so
+                   no DRAM traffic and the rate is the core's pure arithmetic
+                   rate.
+      dram  arm     64 MiB of weights per thread. Four times the entire 16 MiB
+                   L3 slice of one CCX, so the rate is what memory delivers.
+
+  Every thread owns a private weight slice, private activations and a private
+  output buffer. The two arms differ in footprint and in nothing else -- no
+  false sharing, and no shared read stream that the prefetchers could collapse
+  into one.
+
+
+3. THE RESULT
+------------------------------------------------------------------------------
+
+  Threads pinned one per physical core, alternating between the two CCXs, on a
+  machine at load 0.69:
+
+    T   arm     aggregate GMAC/s   aggregate GB/s   per-core GMAC/s   surplus
+    --  ------  ----------------   --------------   ---------------   -------
+     1  cache              83.70            20.92             83.70         -
+     1  dram               61.88            15.47             61.88     1.35x
+     2  cache             162.42            40.61             81.21         -
+     2  dram               99.76            24.94             49.88     1.63x
+     3  cache             235.14            58.79             78.38         -
+     3  dram              132.01            33.00             44.00     1.78x
+     4  cache             287.54            71.89             71.89         -
+     4  dram              154.46            38.62             38.62     1.86x
+     6  cache             471.74           117.94             78.62         -
+     6  dram              155.44            38.86             25.91     3.03x
+
+  Three things are visible at once.
+
+  Arithmetic scales: 83.70 to 471.74 GMAC/s is 5.6x on six cores, and per core it
+  barely moves -- 83.70 down to 78.62, a 6% all-core clock penalty and nothing
+  more. Memory does not scale: 15.47 to 38.86 GB/s is 2.5x, and it is already
+  flat between four cores and six (38.62 against 38.86). Everything past the
+  fourth core adds arithmetic to a machine that has stopped being able to feed
+  it.
+
+  So the surplus grows from 1.35x to 3.03x, and it grows for a reason that has
+  nothing to do with the kernel: the cores get faster together and the memory
+  does not.
+
+  MEASURED UNDER LOAD, THIS TABLE LIES. An earlier run of this same binary while
+  four subagents were compiling reported 2.29x at six threads and 1.97x at four,
+  and an unpinned run before that reported different numbers again. The absolute
+  rates are worthless on a busy host; the surplus is a ratio of two arms measured
+  minutes apart, so it survives better, but it still came out 25% low. Both were
+  recorded and both were wrong. This table is the one taken at load 0.69.
+
+
+4. WHAT THE SURPLUS IS A BUDGET FOR
+------------------------------------------------------------------------------
+
+  A weight format that reads 1/F of the bytes and costs S times the arithmetic
+  per weight is a net win exactly when S < surplus, and then runs F times faster.
+  The surplus is an arithmetic allowance, denominated in multiples of what
+  llama.cpp's own kernel costs per weight, available for nothing.
+
+      threads   allowance
+         1        1.35x
+         2        1.63x
+         4        1.86x
+         6        3.03x
+
+  llama.cpp's i2_s format spends 2.00 bits on a value carrying at most
+  log2(3) = 1.585. Five ternary values fit in a byte (3^5 = 243 <= 256) at 1.600
+  bits: F = 1.25.
+
+  results/weight_density.txt spends this budget and reports what happened. The
+  short version: the byte-lane kernel costs S = 2.43 (81.93 GMAC/s per core
+  against 33.74, both measured cache-resident), which is above the allowance at
+  one, two and four threads and below it at six. It loses at 0.53x, 0.62x and
+  0.78x and wins at 1.35x, in exactly the pattern this table predicts.
+
+  The crossing point is not a coincidence and it is not tuned: it is where a
+  machine stops being able to feed its own cores.
+
+5. WHAT THIS DOES NOT SHOW
+------------------------------------------------------------------------------
+
+  - One host, one memory configuration. The surplus is a property of the ratio
+    between a core's vector throughput and its share of memory bandwidth, and
+    that ratio differs across parts. On a machine with more bandwidth per core
+    the allowance shrinks and the conclusion can invert.
+  - The arms use a GEMV shape with n = 4096 and no model. Prompt processing is
+    a GEMM, where weights are reused across the batch and the whole analysis
+    changes -- there the ALU binds and a denser format would cost, not pay.
+    This is an argument about GENERATION, which is the phase that reads every
+    weight once per token.
+  - Threads ARE pinned, one per physical core, alternating between the two CCXs
+    (cpu0..cpu5 are the six distinct cores here; cpu6..cpu11 are their SMT
+    siblings). Without pinning the scheduler can put two threads on one physical
+    core, which depresses the cache arm, and can keep a 3-thread run inside a
+    single CCX, which depresses bandwidth. An unpinned run of this binary gave
+    2.29x at six threads against the 3.03x above.
+  - Nothing here measures SMT. All twelve logical CPUs would add no arithmetic
+    the memory system could feed, and the question this file exists to answer is
+    about the memory wall.

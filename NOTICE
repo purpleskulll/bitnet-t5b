@@ -1,0 +1,45 @@
+bitnet-t5b
+Copyright 2026 Justus Theile
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License in the LICENSE file at the root of this repository, or at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+THIRD-PARTY MATERIAL
+--------------------
+
+This work is a weight format and a set of kernels for llama.cpp / ggml, which
+are distributed under the MIT License, Copyright (c) 2023-2024 The ggml authors.
+MIT-licensed material may be incorporated into an Apache-2.0 work; the
+attribution requirement below satisfies its terms.
+
+Three files reproduce or adapt upstream code and say so in their own headers:
+
+  benchmarks/i2s_tiled.h
+      Reproduces the ARITHMETIC of tinyBLAS_I2S_AVX::gemm from
+      ggml/src/ggml-cpu/llamafile/sgemm.cpp -- the same 2-bit unpack and the
+      same vpmaddubsw sequence -- so that this project's format can be compared
+      against the shape llama.cpp actually runs. Register allocation differs and
+      the file explains why.
+
+  src/ggml_t5b_glue.c, src/ggml_t5b_glue.h
+      Implement the ggml-facing contract of the i2_s kernels: the same
+      signatures, the same sum(code*a) return convention, and the same
+      downstream post-processing (dot - act_sums[j]) * scale. The contract is
+      upstream's; the implementation is this project's.
+
+  tools/gguf_inspect.py
+      Parses the GGUF container format defined by ggml.
+
+No upstream source file is redistributed verbatim in this repository. The
+integration itself is applied as a patch to an unmodified llama.cpp checkout and
+is not included here.
+
+MODEL WEIGHTS
+-------------
+
+No model weights are distributed. The measurements refer to
+microsoft/bitnet-b1.58-2B-4T and jpacifico/Aramis-2B-BitNet-b1.58-i2s-GGUF,
+which carry their own licences.
