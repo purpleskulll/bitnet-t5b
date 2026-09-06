@@ -109,6 +109,7 @@ Everything in this list needs only a clone, a C compiler with AVX2, and Python 3
 | the ggml-facing glue still matches the kernel signatures | `make` builds `build/ggml_t5b_glue.o` |
 | the `llama.cpp` change, in full, reviewable | `integration/t5b-integration.patch` |
 | the GGUF container reader | `python3 tools/gguf_io.py` — self-checks with no model |
+| the tensor-structure estimator's own statistics | `python3 tools/tensor_structure.py --self-test` |
 
 With `tools/fetch_i2s_reference.sh` run first (needs the pinned upstream tree,
 by clone or by path — no model, no build of `llama.cpp`):

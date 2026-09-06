@@ -24,12 +24,35 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from gguf_inspect import parse_gguf  # noqa: E402
 
 ARGS = sys.argv[1:]
+
+# Hand-rolled rather than argparse because --compare has to be strippable from
+# a positional list. That is fine; forgetting --help is not. Without this the
+# tool treated "--help" as a filename and answered a request for documentation
+# with a FileNotFoundError traceback.
+if "-h" in ARGS or "--help" in ARGS:
+    print(__doc__.strip())
+    sys.exit(0)
+
 COMPARE = None
 if "--compare" in ARGS:
     i = ARGS.index("--compare")
+    if i + 1 >= len(ARGS):
+        print("error: --compare needs a path", file=sys.stderr)
+        sys.exit(2)
     COMPARE = ARGS[i + 1]
     ARGS = ARGS[:i] + ARGS[i + 2:]
 MODEL = ARGS[0] if ARGS else "models/ggml-model-i2_s.gguf"
+
+# The common case for anyone who has just cloned this: no model. Say so, with
+# the reason and where to get one, instead of a traceback from six frames down.
+for _p in [MODEL] + ([COMPARE] if COMPARE else []):
+    if not pathlib.Path(_p).is_file():
+        print(f"error: {_p} not found.", file=sys.stderr)
+        print("       No model weights are distributed with this repository;",
+              file=sys.stderr)
+        print("       fetch microsoft/bitnet-b1.58-2B-4T-gguf into models/ .",
+              file=sys.stderr)
+        sys.exit(2)
 
 
 def dead_index_sets(path):

@@ -70,6 +70,17 @@ def main():
                     help="how much of the tensor to read (default 16 MiB)")
     args = ap.parse_args()
 
+    # The common case for anyone who has just cloned this: no model. A missing
+    # file is a usage problem and deserves a sentence, not a traceback from
+    # inside the parser.
+    if not args.gguf.is_file():
+        print(f"error: {args.gguf} not found.", file=sys.stderr)
+        print("       No model weights are distributed with this repository;",
+              file=sys.stderr)
+        print("       fetch microsoft/bitnet-b1.58-2B-4T-gguf into models/ .",
+              file=sys.stderr)
+        return 2
+
     version, meta, tensors, data_start = parse_gguf(args.gguf)
     print(f"GGUF v{version}, {len(tensors)} tensors, data starts at {data_start}")
     print(f"architecture: {meta.get('general.architecture')}")
