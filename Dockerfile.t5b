@@ -1,0 +1,103 @@
+# Incremental image for the 1.600-bit weight format.
+#
+# WHY THIS IS NOT A FULL BUILD, AND WHAT YOU NEED BEFORE IT
+# ---------------------------------------------------------
+# THIS FILE IS INCREMENTAL. It does not build llama.cpp; it starts from an
+# image that already has a CONFIGURED BitNet tree at /app/bitnet -- that is,
+# /app/bitnet/build with its CMakeCache.txt, and cmake, ninja and gcc on PATH.
+# That base image is NOT in this repository and is not published anywhere. You
+# have to build it yourself, from BitNet's own instructions, at the commit
+# integration/README.md pins:
+#
+#     git clone --recursive https://github.com/microsoft/BitNet.git
+#     git -C BitNet checkout 0b341e582afbf9e1011f24744b554c96a3477eb5
+#     git -C BitNet submodule update --init --recursive
+#     # ...then a Dockerfile of your own that installs clang>=18, runs
+#     # cmake -B build, and builds the llama-cli target.
+#
+# Building llama.cpp from a clean clone means compiling every translation unit.
+# The t5b integration adds one enum value, one traits entry, one nbytes case,
+# two new source files and a dispatch branch. Recompiling ggml from scratch to
+# find out whether five files link is the wrong trade -- so this image starts
+# from the configured tree, drops the new sources in, runs the integration
+# script, and asks ninja to rebuild only what changed.
+#
+# Pass your base image with --build-arg BASE=<your image>.
+#
+# WHAT MAKES RE-RUNNING apply_integration.py SAFE
+# The base image's sources are ALREADY patched -- it was built from them. The
+# script is anchor-based with a _require_once guard, so a second application
+# over an already-patched file is exactly the case that guard exists for, and it
+# was verified against a tree extracted from this same image before this file
+# was written. If an anchor has moved the build fails loudly here rather than
+# producing a binary that silently carries the old kernel.
+#
+# WHAT THIS IMAGE DOES NOT CHANGE
+# The i2_s path. It is the control arm of every A/B this project runs, and a
+# result measured against a moved baseline is not a result. The integration adds
+# GGML_TYPE_T5B = 43 alongside; it does not touch ggml-cpu-i2s.c or any i2_s
+# branch.
+#
+# llama-bench and llama-batched-bench are built alongside llama-cli.
+# batched-bench is the concurrency measurement -- many sequences decoded in
+# parallel, which is a different route to high arithmetic intensity than a long
+# prompt is. Section 6.1 listed it as untested; it was a build target away, and
+# saying "untested" without checking whether the tool was two lines from
+# existing is the same mistake as reporting a blocker without probing it.
+# A base image built the usual way carries only llama-cli, because that target
+# is named specifically to avoid the default ALL target pulling in
+# llama-ui-assets. Throughput claims deserve upstream's own measurement tool,
+# with its repetitions and standard deviation, rather than a shell loop around
+# llama-cli written by the party making the claim.
+#
+# Build, from the root of this repository:
+#
+#     docker build -f Dockerfile.t5b --build-arg BASE=<your base> -t bitnet-t5b .
+#
+# The base is an ARGUMENT, not a constant, because on 2026-09-06 the base image
+# vanished from the host it was built on: `docker images` went from six bitnet-*
+# tags to one, and `docker build` failed with "pull access denied" because
+# BuildKit fell back to trying the registry for an image that no longer existed
+# locally. Nothing in the project pruned it. An image is not a durable artefact
+# and a Dockerfile that names one is not a reproduction recipe on its own.
+#
+# Re-running apply_integration.py over an already-patched tree is the case its
+# _require_once guard exists for and was verified against.
+ARG BASE=bitnet-verify-run
+FROM ${BASE}
+
+# The kernel, the glue, and the script that installs them. Copied rather than
+# mounted so the image is self-contained and the build is reproducible from the
+# tag alone.
+# The script resolves its source directory as <its parent>/../src, so the repo
+# layout has to be preserved -- a flat copy would make it look one directory up
+# and fail. (Override it with --sources if you lay the image out differently.)
+COPY src/ /work/src/
+COPY integration/apply_integration.py /work/integration/apply_integration.py
+
+# Install into the source tree, then rebuild. The positional argument is the
+# BitNet checkout, not the llama.cpp subdirectory. --target llama-cli because
+# the default ALL target pulls in llama-ui-assets, which downloads a bundle
+# from HuggingFace during compilation and fails on a missing loading.html.
+RUN python3 /work/integration/apply_integration.py /app/bitnet \
+ && cmake --build /app/bitnet/build --config Release --target llama-cli -j 4 \
+ && cmake --build /app/bitnet/build --config Release --target llama-bench -j 4 \
+ && cmake --build /app/bitnet/build --config Release --target llama-batched-bench -j 4 \
+ && cmake --build /app/bitnet/build --config Release --target llama-perplexity -j 4
+
+# Fail here rather than at run time if the type never made it into the binary.
+# A green build is not evidence that the kernel is present -- this project has
+# shipped a "deployed" binary carrying the old code before, and only grepping
+# the artefact caught it.
+#
+# GREP THE RIGHT ARTEFACT. The first version of this check looked in
+# bin/llama-cli and failed on a build that was entirely correct: llama-cli links
+# dynamically, and the type-traits table with the "t5b" type_name lives in
+# libggml-base.so. A presence check aimed at the wrong file reports absence, and
+# absence is exactly what it is supposed to be able to prove.
+RUN set -e; \
+    hit=$(grep -rlF t5b /app/bitnet/build/bin/ 2>/dev/null || true); \
+    echo "carrying t5b: $hit"; \
+    test -n "$hit" || (echo "FATAL: no artefact in build/bin carries the t5b type name" && exit 1); \
+    nm -D /app/bitnet/build/bin/libggml-base.so 2>/dev/null | grep -i t5b || true; \
+    grep -c . /dev/null || true

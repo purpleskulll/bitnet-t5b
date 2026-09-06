@@ -1,0 +1,19 @@
+# Build products.
+build/
+*.o
+*.so
+
+# GENERATED, deliberately not tracked. tools/fetch_i2s_reference.sh extracts
+# upstream's MIT-licensed i2_s kernel from a named llama.cpp commit into these
+# two files. Committing them would make this repository a redistributor of an
+# upstream source file, which NOTICE says it is not. Regenerate with
+#   tools/fetch_i2s_reference.sh
+src/ggml_i2s_ternary.c
+src/ggml_i2s_ternary.h
+
+# Model weights are never distributed here. The tools default to models/.
+models/
+*.gguf
+
+__pycache__/
+*.pyc

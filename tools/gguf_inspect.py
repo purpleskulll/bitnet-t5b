@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from derive_filler_tokens import _Reader, _SCALAR, _GGUF_STRING, _GGUF_ARRAY, GGUFError  # noqa: E402
+from gguf_io import _Reader, _SCALAR, _GGUF_STRING, _GGUF_ARRAY, GGUFError  # noqa: E402
 
 GGML_TYPE_NAMES = {0: "f32", 1: "f16", 36: "i2_s", 37: "i8_s", 38: "tl1", 39: "tl2"}
 

@@ -46,31 +46,133 @@ Faster in 5 of 5 `llama-bench` invocations on both measures, load order
 alternated. **Measured on one AVX2 part without VNNI** — see the limitations,
 which lead the paper's §9 rather than closing it.
 
+## Quick start
+
+From a fresh clone, with a compiler and Python 3:
+
+```bash
+make test          # builds and runs the suite: 177,734 checks, 0 failures
+make bench         # builds the benchmarks; says LOUDLY what it skips and why
+```
+
+`make test` is the gate and exits non-zero on any failure. Nothing above needs a
+model, a network, or a `llama.cpp` checkout.
+
+To build and run one test binary by hand, which is what the paper's §4 refers to:
+
+```bash
+gcc -O3 -mavx2 -mfma -march=native -std=c11 \
+    src/test_t5b.c src/ternary_t5b.c -o test_t5b && ./test_t5b
+```
+
+Three of the four benchmarks compare against upstream's own `i2_s` kernel, which
+this repository does **not** carry — it is MIT-licensed upstream code and is
+extracted from a pinned commit rather than redistributed here:
+
+```bash
+tools/fetch_i2s_reference.sh                    # clone the pinned commit
+tools/fetch_i2s_reference.sh --from <checkout>  # or use one you already have
+make bench                                      # now builds all four
+```
+
+The extraction is digest-checked against the exact revision every measurement in
+the paper was made on, and **refuses** rather than silently emitting different
+arithmetic under the same name.
+
 ## Layout
 
 | | |
 |---|---|
 | `paper/` | the paper: Markdown, LaTeX source, compiled PDF |
-| `src/` | the format, its three kernels, the ggml-facing glue, the test suite |
+| `src/` | the format, its kernels, the ggml-facing glue, the test suite |
 | `benchmarks/` | port throughput, thread scaling, one token's weight traffic, per-kernel rate, and the upstream tiled shape used as a control |
-| `tools/` | GGUF converters and analysis: to t5b, architecture retag, depth synthesis, dead-neuron census |
+| `tools/` | GGUF converters and analysis: to t5b, architecture retag, depth synthesis, dead-neuron census, tensor structure, the `i2_s` reference fetcher |
+| `integration/` | the `llama.cpp` change, as a unified diff **and** as the script that applies it |
 | `results/` | every evidence file the paper cites, each stating its own reproduction command |
+| `Makefile` | builds and runs all of the above |
+| `Dockerfile.t5b` | the incremental image; needs a base image you build yourself |
 
-## Reproducing
+`build/` is produced by `make` and is not checked in. `src/ggml_i2s_ternary.{c,h}`
+are **generated** by `tools/fetch_i2s_reference.sh` and are likewise not checked
+in — see the licence note below.
 
-The kernels and their tests are self-contained:
+## What is reproducible from this repository alone
 
-```bash
-gcc -O3 -mavx2 -mfma -march=native -std=c11 src/test_t5b.c src/ternary_t5b.c -o test_t5b && ./test_t5b
-```
+Everything in this list needs only a clone, a C compiler with AVX2, and Python 3.
 
-The benchmarks need only a compiler; `benchmarks/bench_ports.c` establishes which
-execution port binds, and `benchmarks/bench_threads.c` the memory-versus-
-arithmetic ratio that the paper's profitability condition turns on.
+| claim | how |
+|---|---|
+| the packing is lossless and the AVX2 kernel matches the scalar one | `make test` — 97,529 checks for t5b, 80,205 for t10, 0 failures |
+| 1.600 bits/weight, and what padding costs at real tensor widths | printed by `make test` |
+| the accumulator provably wraps and the answer is still right | part of `make test` |
+| which execution port binds | `make bench && taskset -c 5 ./build/bench_ports` |
+| the ggml-facing glue still matches the kernel signatures | `make` builds `build/ggml_t5b_glue.o` |
+| the `llama.cpp` change, in full, reviewable | `integration/t5b-integration.patch` |
+| the GGUF container reader | `python3 tools/gguf_io.py` — self-checks with no model |
 
-Model-level results need a `llama.cpp` build carrying the type, a converted
-GGUF, and the model itself; the integration is applied as a patch to an
-unmodified checkout and is **not** included here.
+With `tools/fetch_i2s_reference.sh` run first (needs the pinned upstream tree,
+by clone or by path — no model, no build of `llama.cpp`):
+
+| claim | how |
+|---|---|
+| t5b against upstream `i2_s`, one token's weight traffic | `./build/bench_token 6 3` |
+| arithmetic surplus against core count | `./build/bench_threads 0.5` |
+| per-kernel rate, instruction and spill counts | `./build/bench_alu` |
+
+## What is **not** reproducible from this repository alone, and why
+
+Being direct about this is the point of the section. The paper says every figure
+is recomputed by a script in this repository; for the figures below, the script
+is here and its **inputs** are not.
+
+1. **Anything with a number of tokens per second, or a perplexity, in it.**
+   That is the whole of the results table above, `results/inference_t5b.txt` and
+   `results/perplexity_t5b.txt`. They need three things this repository does not
+   and will not contain:
+   - **the checkpoint.** `microsoft/bitnet-b1.58-2B-4T-gguf`, ~1.1 GiB, under its
+     own licence. Download it yourself; no model weights are distributed here.
+   - **a patched, built `llama.cpp`.** `integration/` has the complete change and
+     names the commit. Building it is on you: `Dockerfile.t5b` is *incremental*
+     and starts from a base image with an already-configured BitNet tree that is
+     not published anywhere.
+   - **the measuring host.** AMD Ryzen 5 3600, six cores, AVX2 without VNNI,
+     under real background load. Your numbers will differ. The paper's honest
+     limits below say why that matters more than usual here.
+
+2. **The tensor-level censuses.** `results/tensor_structure.txt`,
+   `results/weight_density.txt`, `results/real_weights_check.txt` and
+   `results/dead_neurons.txt` are recomputed by `tools/tensor_structure.py`,
+   `tools/gguf_to_t5b.py --verify` and `tools/dead_neurons.py` — all present,
+   all runnable — but each reads the checkpoint. Get the model and they run.
+
+3. **`src/ggml_i2s_ternary.{c,h}`.** Generated, not stored. See below.
+
+4. **`results/phase_status.txt`**, which the paper's evidence table names, is not
+   in this repository. It belongs to a different phase of a larger private
+   project and is not part of this work.
+
+5. **The absolute perplexity figure of 96.82** is high for a 2 B model and is
+   reported as an identity check between the two formats, not as a quality
+   claim. It is the same number for both arms; that identity is the finding.
+
+## Where the paper's evidence table points, and where the file actually is
+
+The paper was written against a private tree with a different layout. The paths
+in its evidence table map onto this repository like this:
+
+| the paper says | in this repository |
+|---|---|
+| `src_modifications/bench/bench_ports.c` | `benchmarks/bench_ports.c` |
+| `src_modifications/bench/bench_token.c` | `benchmarks/bench_token.c` |
+| `src_modifications/ternary_t5b.{c,h}` | `src/ternary_t5b.{c,h}` |
+| `src_modifications/tests/` | `src/test_t5b.c`, `src/test_t10.c` |
+| `src_modifications/ggml_i2s_ternary.c` | generated by `tools/fetch_i2s_reference.sh` |
+| `scripts/apply_integration.py` | `integration/apply_integration.py` |
+| `Dockerfile.t5b` | `Dockerfile.t5b` (incremental — read its header first) |
+| `results/phase_status.txt` | not in this repository; see above |
+
+Every other path the paper names — `results/*.txt`, `tools/*.py` — is where it
+says it is.
 
 ## Honest limits
 
@@ -87,5 +189,7 @@ unmodified checkout and is **not** included here.
 ## Licence
 
 Apache License 2.0 — see `LICENSE`. Attribution for the MIT-licensed `llama.cpp`
-and `ggml` material this work builds on is in `NOTICE`. No model weights are
-distributed.
+and `ggml` material this work builds on is in `NOTICE`. No upstream source file
+is redistributed here: the one piece of upstream code the benchmarks need is
+fetched from a named commit by `tools/fetch_i2s_reference.sh`, on your machine,
+from your checkout. No model weights are distributed.

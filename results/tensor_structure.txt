@@ -22,7 +22,7 @@ measured on the shipped weights
   Two orders are reported because i2_s is interleaved: a 32-byte block holds
   128 weights, byte j carrying weights j, 32+j, 64+j, 96+j (bits 7-6, 5-4,
   3-2, 1-0). Confirmed against the verbatim upstream AVX2 kernel in
-  src_modifications/ggml_i2s_ternary.c, where the >>6/>>4/>>2/>>0 lanes are
+  src/ggml_i2s_ternary.c, where the >>6/>>4/>>2/>>0 lanes are
   paired with activations py+0/+32/+64/+96 while px advances 32 bytes per 128
   activations. "Storage order" is the byte stream; "row-major" is logical
   weight order with row-straddling pairs excluded.

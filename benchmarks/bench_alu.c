@@ -32,9 +32,9 @@
 #include <string.h>
 #include <time.h>
 #include <stdint.h>
-#include "../ggml_i2s_ternary.h"
-#include "../ternary_t10.h"
-#include "../ternary_t5b.h"
+#include "../src/ggml_i2s_ternary.h"
+#include "../src/ternary_t10.h"
+#include "../src/ternary_t5b.h"
 #include "i2s_tiled.h"
 static double now(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return t.tv_sec+1e-9*t.tv_nsec;}
 static uint32_t rs=1234567; static uint32_t rn(void){rs^=rs<<13;rs^=rs>>17;rs^=rs<<5;return rs;}

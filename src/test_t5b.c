@@ -14,7 +14,7 @@
  * first ten differing cases with their inputs.
  */
 
-#include "../ternary_t5b.h"
+#include "ternary_t5b.h"
 
 #include <immintrin.h>
 #include <stdio.h>

@@ -279,7 +279,7 @@ THE 1.600-BIT FORMAT, INSIDE llama.cpp, GENERATING TOKENS
   memory-bound and should favour the denser format; but the denser format's
   kernel is arithmetic-bound and has proportionally more work to do as well.
 
-  src_modifications/bench/bench_token.c now takes a scale factor that allocates
+  benchmarks/bench_token.c now takes a scale factor that allocates
   that many times the model's tensors -- a deeper model at the same layer
   shapes. At six threads, three runs each:
 

@@ -71,9 +71,9 @@
 #include <time.h>
 #include <stdint.h>
 
-#include "../ggml_i2s_ternary.h"
-#include "../ternary_t10.h"
-#include "../ternary_t5b.h"
+#include "../src/ggml_i2s_ternary.h"
+#include "../src/ternary_t10.h"
+#include "../src/ternary_t5b.h"
 #include "i2s_tiled.h"
 
 #define MAX_THREADS 12

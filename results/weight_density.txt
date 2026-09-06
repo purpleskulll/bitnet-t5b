@@ -2,21 +2,13 @@ SPENDING 2.000 BITS ON A VALUE THAT CARRIES 1.585
 ==============================================================================
 
   Reproduce:
-      make -C src_modifications build/obj/ggml_i2s_ternary.o \
-                                build/obj/ternary_t10.o
-      gcc -O3 -mavx2 -mfma -march=native -std=c11 -pthread \
-          src_modifications/bench/bench_token.c \
-          src_modifications/build/obj/ggml_i2s_ternary.o \
-          src_modifications/build/obj/ternary_t10.o \
-          -o src_modifications/build/bench_token
-      ./src_modifications/build/bench_token 4 3
-      ./src_modifications/build/bench_token 6 3
+      tools/fetch_i2s_reference.sh      # the i2_s baseline, from upstream
+      make bench
+      ./build/bench_token 4 3
+      ./build/bench_token 6 3
+      taskset -c 5 ./build/bench_ports
 
-      gcc -O3 -mavx2 -march=native -std=c11 \
-          src_modifications/bench/bench_ports.c -o src_modifications/build/bench_ports
-      taskset -c 5 ./src_modifications/build/bench_ports
-
-  Correctness for the packing measured here: ./src_modifications/build/test_t10
+  Correctness for the packing measured here: make test && ./build/test_t10
   (80,076 checks, 0 failures), and see results/thread_headroom.txt for the
   budget this experiment was designed against.
 
@@ -151,7 +143,7 @@ SPENDING 2.000 BITS ON A VALUE THAT CARRIES 1.585
 ------------------------------------------------------------------------------
 
   Pure arithmetic rate, one core, weights small enough to stay in L2 so memory
-  cannot bind  (src_modifications/bench/bench_alu.c, taskset -c 5), against the
+  cannot bind  (benchmarks/bench_alu.c, taskset -c 5), against the
   innermost loop of each compiled object:
 
       kernel   GMAC/s   instr   mul   spill   weights   instr/w   mul ceiling   of it
@@ -160,7 +152,7 @@ SPENDING 2.000 BITS ON A VALUE THAT CARRIES 1.585
       t5b       33.74      47    13      0      160      0.294       50.5        67%
 
   The ceiling is 1.05 multiply-class instructions per cycle at 3.91 GHz, both
-  measured -- src_modifications/bench/bench_ports.c puts vpmaddubsw, vpmaddwd,
+  measured -- benchmarks/bench_ports.c puts vpmaddubsw, vpmaddwd,
   vpmulhuw and vpmullw all at 1.05 per cycle and the cheap ones three to four
   times higher (vpand 3.95, vpaddw 3.00). One scarce port.
 
@@ -228,7 +220,7 @@ SPENDING 2.000 BITS ON A VALUE THAT CARRIES 1.585
   instructions per weight. Comparing against a kernel that never runs would have
   flattered the denser format.
 
-  So the tiled shape was built and measured (src_modifications/bench/i2s_tiled.h,
+  So the tiled shape was built and measured (benchmarks/i2s_tiled.h,
   upstream's arithmetic, cross-checked row by row against the reference):
 
       footprint                    tiled       per-row     tiled/per-row

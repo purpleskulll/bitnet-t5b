@@ -28,7 +28,7 @@ REAL WEIGHTS: THE i2_s -> t5b REPACKING, CHECKED ON THE SHIPPED MODEL
 
     The unpack in this file could agree with a wrong reading of the model and
     prove nothing, so it is never used as the authority. The authority is
-    bitnet_vec_dot_i2_i8_s_reference in src_modifications/ggml_i2s_ternary.c,
+    bitnet_vec_dot_i2_i8_s_reference in src/ggml_i2s_ternary.c,
     which is upstream's AVX2 i2_s branch copied verbatim, compiled here and
     called through ctypes on the model's OWN bytes. Every dot product below is
     checked against it.

@@ -11,7 +11,7 @@ ternary.
 WHAT IT DOES
 ------------
 Every i2_s tensor is unpacked to ternary weights and repacked with the layout
-in src_modifications/ternary_t5b.h -- 32 bytes over 160 weights, five base-3
+in src/ternary_t5b.h -- 32 bytes over 160 weights, five base-3
 digits per byte. Every other tensor is copied byte for byte; the f16 128k
 embedding is 55.7 % of the file and does not change. The header is copied
 verbatim and only two fields per converted tensor are patched, the type and the
@@ -71,7 +71,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gguf_inspect import parse_gguf                                # noqa: E402
-from derive_filler_tokens import _Reader, GGUFError                # noqa: E402
+from gguf_io import _Reader, GGUFError                             # noqa: E402
 
 # --------------------------------------------------------------------------
 # Formats
@@ -91,13 +91,13 @@ GGML_TYPE_T5B = 43
 # every subsequent tensor.
 GGML_TYPE_SIZE = {GGML_TYPE_F32: 4, GGML_TYPE_F16: 2}
 
-# i2_s, from src_modifications/ggml_i2s_ternary.h: a block is 32 bytes over 128
+# i2_s, from src/ggml_i2s_ternary.h: a block is 32 bytes over 128
 # weights, and for byte j of the block bits 6-7 hold the weight at block offset
 # 0+j, bits 4-5 at 32+j, bits 2-3 at 64+j, bits 0-1 at 96+j.
 I2S_BLOCK = 128
 I2S_BYTES = 32
 
-# t5b, from src_modifications/ternary_t5b.h: 32 bytes over 160 weights, byte j
+# t5b, from src/ternary_t5b.h: 32 bytes over 160 weights, byte j
 # holding sum_k code(w[32k+j]) * 3^k, at most 242.
 T5B_BLOCK = 160
 T5B_BYTES = 32
@@ -107,7 +107,7 @@ T5B_POW3 = np.array([1, 3, 9, 27, 81], dtype=np.uint16)
 # The GGUF spec's default when general.alignment is absent from the KV block.
 GGUF_DEFAULT_ALIGNMENT = 32
 
-DEFAULT_SRC = Path(__file__).resolve().parent.parent / "src_modifications"
+DEFAULT_SRC = Path(__file__).resolve().parent.parent / "src"
 
 
 class ConversionError(Exception):
@@ -124,7 +124,7 @@ def t5b_blocks(n):
 
 def t5b_size(n):
     """Packed bytes for n weights, rounded up to a whole block. Mirrors
-    ternary_t5b_size() in src_modifications/ternary_t5b.c; --verify checks the
+    ternary_t5b_size() in src/ternary_t5b.c; --verify checks the
     two agree by calling the C one."""
     return t5b_blocks(n) * T5B_BYTES
 
@@ -689,7 +689,7 @@ def _verify_body(lib, src, tensors, by_name, i2s, data_start, tensor_names,
     print("""
     The unpack in this file could agree with a wrong reading of the model and
     prove nothing, so it is never used as the authority. The authority is
-    bitnet_vec_dot_i2_i8_s_reference in src_modifications/ggml_i2s_ternary.c,
+    bitnet_vec_dot_i2_i8_s_reference in src/ggml_i2s_ternary.c,
     which is upstream's AVX2 i2_s branch copied verbatim, compiled here and
     called through ctypes on the model's OWN bytes. Every dot product below is
     checked against it.

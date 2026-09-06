@@ -56,7 +56,7 @@
 #include <time.h>
 #include <stdint.h>
 
-#include "../ggml_i2s_ternary.h"
+#include "../src/ggml_i2s_ternary.h"
 
 #define MAX_THREADS 12
 #define REPS 3
