@@ -1,0 +1,64 @@
+==================================================================
+ S ACROSS MICROARCHITECTURES -- static model, calibrated
+==================================================================
+
+Reproduce:  microarch_model.sh
+Model:      llvm-mca 23.1.0
+Anchor:     i2_s 81.93 GMAC/s, t5b 33.74 GMAC/s, S = 2.428
+            (results/weight_density.txt, this Zen 2 host, bench_alu)
+
+--- the two loops, as the compiler emits them today ---
+  i2s    21 instr   17 vector   4 multiply  128 weights   0.1328 vec/w  0.03125 mul/w
+  t5b    46 instr   42 vector  13 multiply  160 weights   0.2625 vec/w  0.08125 mul/w
+  (instr counts include the loop branch; weight_density.txt recorded 21 and 47)
+
+--- CALIBRATION: does the model reproduce what was measured here? ---
+  dependency bound (Total Cycles)  S = 2.5009   measured 2.428   3.00 %
+  resource   bound (RThroughput)   S = 1.9623   measured 2.428   -19.18 %
+
+  The real Zen 2 loop is DEPENDENCY bound, not resource bound, so only the
+  first line is a prediction of this host. It is the metric used for the
+  AVX2 rows below. The resource bound is carried anyway because it is the
+  only fair metric for the VNNI rows, and its miss here is the honest
+  measure of how much that costs.
+
+--- (a) THE SAME AVX2 CODE, on parts this project cannot run on ---
+  target              t5b cyc   i2_s cyc        S
+  znver2                18.01       5.76    2.501
+  znver3                11.51       3.77    2.441
+  znver4                11.51       3.77    2.441
+  znver5                11.51       3.77    2.441
+  icelake-server        14.02       5.34    2.098
+  sapphirerapids        14.52       5.01    2.317
+
+  Read: S does not run away on a wider machine. Zen 3 and later execute
+  256-bit integer ops natively instead of splitting them, which cuts both
+  kernels' cycle counts by about a third and leaves their RATIO alone.
+  The paper's S is therefore not an artefact of one narrow part.
+
+--- (b) WITH VNNI, both kernels using VPDPBUSD, at the resource bound ---
+  target                 t5b  t5b+VNNI      i2_s i2_s+VNNI   S(avx2)   S(vnni)
+  znver4                7.50      6.50      3.30      2.50     1.818     2.080
+  znver5                7.50      6.50      3.30      2.50     1.818     2.080
+  icelake-server       11.00     11.00      4.00      3.50     2.200     2.514
+  sapphirerapids       11.00     11.00      3.50      3.50     2.514     2.514
+
+  Read WITH the caveats in this script's header. VNNI moves S the way the
+  paper predicted -- against the packed format -- because i2_s spends a
+  larger fraction of its instructions in the contraction that VPDPBUSD
+  collapses. The size of the move is the new information, and it is
+  modest, not decisive. These loops have never been executed.
+
+--- NEGATIVE CONTROL, and its failure ---
+  llvm-mca modelled VPDPBUSD for znver2 -- a part without VNNI -- even
+  with the feature explicitly disabled (-mattr=-avx512vnni,-avxvnni).
+  It assigned it latency 11 and throughput 1.00 out of thin air.
+  CONSEQUENCE: this tool cannot tell a legal VNNI sequence from an
+  illegal one, so it offers no check on section (b) beyond timing. The
+  control is kept in place and reported failing rather than removed.
+
+--- what is still open ---
+  A static model is not a measurement. The one number that would settle
+  the VNNI question is a run of second_datapoint.sh on any part
+  with avx512vnni or avx_vnni. Nothing in this file substitutes for it.
+==================================================================

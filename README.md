@@ -181,6 +181,24 @@ says it is.
    and leaves the decode unchanged, moving the profitability condition against a
    packed format. An independent system built for VNNI (*Litespark*) stores
    ternary weights at eight bits for that reason.
+
+   Two scripts address this, and neither is a substitute for the other:
+
+   - `./microarch_model.sh` needs no second machine. It runs `llvm-mca` over the
+     inner loops `gcc` actually emits and reports `S` for `znver2/3/4/5`,
+     `icelake-server` and `sapphirerapids`. It **calibrates first** — its Zen 2
+     prediction is 2.50 against the 2.428 measured here, and it exits non-zero
+     if that ever drifts past 8% — and it finds `S` between 2.10 and 2.50, so
+     the ratio is not an artefact of one narrow part. It also bounds VNNI's cost
+     at 0–14% while reporting, in its own output, the three reasons that half is
+     *not* a result: hand-written loops that have never been executed, a metric
+     that failed calibration, and a negative control that did not fire.
+     Requires `llvm-mca`; the header says how to fetch it without root.
+   - `./second_datapoint.sh user@host` is the real answer and needs one machine
+     reporting `avx512vnni` or `avx_vnni`. No model, no Docker, no privileges.
+     **If you have such a machine, this is the single most useful thing you can
+     contribute to this work.**
+
 2. **One model size.** No public ternary checkpoint above 2 B exists.
 3. **A shared, noisy host.** Run-to-run spread is comparable to the effect,
    which is why the headline is a five-invocation replication.
