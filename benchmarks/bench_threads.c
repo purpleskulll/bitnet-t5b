@@ -276,9 +276,24 @@ int main(int argc, char **argv)
     printf("  working set. A weight format that reads 1/F of the bytes and\n");
     printf("  costs S times the arithmetic per weight is a net win exactly\n");
     printf("  when S < surplus, and then runs F times faster.\n\n");
-    printf("  1.6 bits/weight vs i2_s 2.0 gives F = 1.25, and the base-3\n");
-    printf("  quotient-chain kernel costs about S = 1.6 (0.25 vector ops per\n");
-    printf("  MAC against upstream's 0.156). Read the 6-thread row.\n");
+    /* This block used to print an ESTIMATE -- "S = 1.6, from 0.25 vector ops
+     * per MAC against upstream's 0.156" -- made before either kernel existed to
+     * be timed. Both figures were wrong and the conclusion it licensed was too
+     * comfortable, so it is replaced by what bench_alu measures. Counting the
+     * loops gcc emits today gives 42 vector ops per 160 weights against 17 per
+     * 128, which is 0.2625 against 0.1328 and a ratio of 1.98 -- still not S,
+     * because the packed loop is dependency-bound rather than issue-bound and
+     * the measured ratio is higher than the op counts alone predict. */
+    printf("  1.600 bits/weight against i2_s 2.000 gives F = 1.25. S is\n");
+    printf("  MEASURED, by bench_alu, not estimated from op counts:\n\n");
+    printf("    S = 81.93 / 33.74 = 2.43   against this reference kernel\n");
+    printf("    S = 2.43 / 1.606  = 1.51   against llama.cpp's REAL i2_s path,\n");
+    printf("                               which is 1.606x slower than the\n");
+    printf("                               reference and is what actually ships\n\n");
+    printf("  So read the 6-thread row for the kernel-level comparison and the\n");
+    printf("  4-thread row for the deployed one; the condition holds in both.\n");
+    printf("  An op-count estimate gives 1.98 (0.2625 vector ops per weight\n");
+    printf("  against 0.1328) and understates it -- see results/weight_density.txt.\n");
 
     fprintf(stderr, "sink=%f\n", (double)Yd[0]);
     free(w); free(Wd); free(Wc); free(A); free(Yd);

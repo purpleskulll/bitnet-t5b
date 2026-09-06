@@ -19,6 +19,55 @@
 uint64_t bitnet_t5b_calls       = 0;
 uint64_t bitnet_t5b_sgemm_calls = 0;
 
+/* Cycles spent INSIDE the matmul entry points, summed across worker threads.
+ *
+ * WHY THIS EXISTS
+ * ---------------
+ * Section 5 of the paper predicts, from S = 2.43 and the surplus table, that
+ * this format loses at four threads; the standalone weight-traffic replay
+ * agrees and gives 0.780x; the real model gains 1.132x. Something between the
+ * isolated kernels and the model changes the sign, and the paper says so
+ * without being able to say what.
+ *
+ * The two candidates are distinguishable by one number: how long the matmuls
+ * actually take in situ. If the in-situ ratio is far below the isolated 2.43,
+ * llama.cpp's real i2_s path is slower than the reference kernel section 7.2
+ * measures and S was the wrong quantity. If it is near 2.43, then the surplus
+ * is the wrong quantity instead and the memory left to the weight stream in a
+ * real run is smaller than the isolated measurement suggests.
+ *
+ * ONLY THIS FILE IS INSTRUMENTED, which is deliberate. The i2_s path is the
+ * control arm and must stay bit-identical and unperturbed, so its matmul time
+ * is obtained by DIFFERENCE instead: everything a token does apart from the
+ * weight matmuls is identical between the arms, so
+ *
+ *     T_other      = T_total(t5b)  - T_matmul(t5b)      [both measured here]
+ *     T_matmul(i2s) = T_total(i2s) - T_other            [T_total measured]
+ *
+ * and the ratio follows. The cost of the instrumentation is one rdtsc pair per
+ * entry, against a call that processes a whole tensor slice. */
+uint64_t bitnet_t5b_cycles      = 0;
+
+static inline uint64_t t5b_rdtsc(void)
+{
+    unsigned lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return ((uint64_t) hi << 32) | lo;
+}
+
+static inline void t5b_acc(const uint64_t *t0)
+{
+    __atomic_fetch_add(&bitnet_t5b_cycles, t5b_rdtsc() - *t0, __ATOMIC_RELAXED);
+}
+
+/* GCC's cleanup attribute, not an accumulate before each return: these entry
+ * points have early exits (an empty row range, a zero-sized tile), and an
+ * accumulate written at the end of the body would silently miss them and
+ * undercount. The attribute fires on every scope exit. rdtsc is unguarded
+ * because this translation unit is AVX2-only by construction. */
+#define T5B_TIME() \
+    const uint64_t t5b_t0 __attribute__((cleanup(t5b_acc))) = t5b_rdtsc()
+
 /* 0 = not yet registered. Registration must happen exactly once even though
  * every ggml worker thread reaches these entry points; a plain lazy flag lets
  * several through and prints the counter line once per registration, which
@@ -29,10 +78,13 @@ static int g_t5b_registered = 0;
 void bitnet_t5b_report(void)
 {
     fprintf(stderr,
-            "[bitnet-t5b] type=43 bits/weight=1.600 calls=%llu sgemm=%llu\n",
+            "[bitnet-t5b] type=43 bits/weight=1.600 calls=%llu sgemm=%llu "
+            "matmul_cycles=%llu\n",
             (unsigned long long) __atomic_load_n(&bitnet_t5b_calls,
                                                  __ATOMIC_RELAXED),
             (unsigned long long) __atomic_load_n(&bitnet_t5b_sgemm_calls,
+                                                 __ATOMIC_RELAXED),
+            (unsigned long long) __atomic_load_n(&bitnet_t5b_cycles,
                                                  __ATOMIC_RELAXED));
 }
 
@@ -103,6 +155,7 @@ void ggml_vec_dot_t5b_i8_s(int n, float *s, size_t bs,
     const size_t rowbytes = ternary_t5b_size((size_t) n);
 
     t5b_tick(&bitnet_t5b_calls);
+    T5B_TIME();
 
     if (nrc <= 0) {
         return;
@@ -156,6 +209,7 @@ void ggml_gemv_t5b_i8_s(int n, float *s, size_t bs,
     (void) nr;
 
     t5b_tick(&bitnet_t5b_calls);
+    T5B_TIME();
 
     if (nc <= 0) {
         return;
@@ -224,6 +278,7 @@ void ggml_gemm_t5b_i8_s(int n, float *s, size_t bs,
     const size_t rowbytes = ternary_t5b_size((size_t) n);
 
     t5b_tick(&bitnet_t5b_calls);
+    T5B_TIME();
 
     if (nc <= 0 || nr <= 0) {
         return;
@@ -291,6 +346,7 @@ void bitnet_t5b_sgemm(int64_t m, int64_t n, int64_t k,
     }
 
     t5b_tick(&bitnet_t5b_sgemm_calls);
+    T5B_TIME();
 
     /* THIS is the path the real model takes, and the reason the rewiring above
      * would have been worth nothing on its own. The counter line from the first
