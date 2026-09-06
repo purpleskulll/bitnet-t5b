@@ -793,9 +793,17 @@ model.
 
 # Data and code availability
 
-Every figure in this paper is recomputed by a script in the repository and
-recorded in a file under `results/`, which the build gate re-derives and checks
-for drift on every run.
+The format, the kernels, the benchmarks, the converters and every evidence file
+cited here are public under the Apache License 2.0 at
+
+> **https://github.com/purpleskulll/bitnet-t5b**
+
+Every figure is recomputed by a script in that repository and recorded in a file
+under `results/`, each stating its own reproduction command. No model weights
+are distributed and no upstream source is redistributed verbatim; the
+integration is applied as a patch to an unmodified `llama.cpp` checkout, and the
+three files that reproduce or adapt an upstream contract say so in their headers
+and in `NOTICE`.
 
 | claim | evidence |
 |---|---|

@@ -28,6 +28,7 @@
 \usepackage{xcolor}
 \usepackage{microtype}
 \usepackage[hidelinks]{hyperref}
+\usepackage{url}
 \usepackage{siunitx}
 \sisetup{group-separator={,},group-minimum-digits=4}
 
@@ -726,9 +727,15 @@ computable decision rule rather than a property of the model.
 
 \section*{Data and code availability}
 
-Every figure is recomputed by a script in the repository and recorded under
-\code{results/}, which the build gate re-derives and checks for drift on every
-run: \code{tensor\_structure.txt} and \code{real\_weights\_check.txt} (code
+The format, the kernels, the benchmarks, the converters and every evidence file
+cited here are public under the Apache License~2.0 at
+\begin{center}
+\url{https://github.com/purpleskulll/bitnet-t5b}
+\end{center}
+No model weights are distributed and no upstream source is redistributed
+verbatim; the integration is applied as a patch to an unmodified
+\code{llama.cpp} checkout. Every figure is recomputed by a script there and
+recorded under \code{results/}, each file stating its own reproduction command: \code{tensor\_structure.txt} and \code{real\_weights\_check.txt} (code
 histogram, absence of code 3, entropy); \code{bench\_ports.c} ($\pi$);
 \code{thread\_headroom.txt} ($\Sigma$); \code{weight\_density.txt} (kernel
 rates, instruction and spill counts); \code{bench\_token.c} (weight traffic);
