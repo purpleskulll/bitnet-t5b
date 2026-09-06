@@ -1,0 +1,121 @@
+RESOLVING THE FOUR-THREAD CONTRADICTION: THE IN-SITU KERNEL RATE
+==============================================================================
+
+  Reproduce:
+      # the glue accumulates rdtsc cycles across its three entry points and
+      # prints them at exit; build the image, then
+      docker run --rm -v <repo>/models:/app/models:ro bitnet-t5b \
+        /app/bitnet/build/bin/llama-bench -m /app/models/ggml-model-t5b.gguf \
+        -t 4 -p 0 -n 128 -r 2      # and again with -r 10
+      # and the same two runs for ggml-model-i2_s.gguf, which has no counter
+      # and is obtained by difference.
+
+
+1. THE CONTRADICTION
+------------------------------------------------------------------------------
+
+  The profitability condition says a denser format wins iff S < Sigma. Measured
+  in isolation, S = 81.93 / 33.74 = 2.43 and Sigma at four threads is 1.86, so
+  the format should LOSE at four threads. The standalone weight-traffic replay
+  agrees and gives 0.780x. The model does not: at four threads it gains 1.132x
+  on prompt and 1.143x on generation.
+
+  Something between the isolated kernels and the model changes the sign. Two
+  candidates were recorded and neither was measured:
+
+    (a) llama.cpp's in-situ i2_s path is not the reference kernel section 7.2
+        benchmarks -- it carries the llamafile_sgemm dispatch and its own
+        post-processing -- so the effective S may be below 2.43.
+    (b) the non-matmul 70% of a token competes for memory, so the bandwidth
+        left to the weight stream may be below the isolated measurement and the
+        effective Sigma above 1.86.
+
+  These are distinguishable by one number: how long the matmuls actually take
+  inside a running model.
+
+
+2. METHOD, AND WHY ONLY ONE ARM IS INSTRUMENTED
+------------------------------------------------------------------------------
+
+  ggml_t5b_glue.c accumulates rdtsc cycles across its three entry points using
+  GCC's cleanup attribute, so every exit path counts including the early ones.
+  The i2_s path is the control arm and is NOT touched: its matmul time is
+  obtained by difference, which is sound because everything a token does apart
+  from the weight matmuls is identical between the arms.
+
+      T_other       = T_total(t5b) - T_matmul(t5b)      both measured
+      T_matmul(i2s) = T_total(i2s) - T_other            T_total measured
+
+  Two details decide whether the number means anything.
+
+  THE CLOCK. rdtsc counts at the invariant TSC rate, not the core clock. This
+  part reports constant_tsc and nonstop_tsc, and the TSC measured against
+  CLOCK_MONOTONIC is 3.599978 GHz across three trials -- the 3.6 GHz base, not
+  the 3.91 GHz single-core figure section 5.2 uses for issue rates. Converting
+  with 3.91 would have made every time here 8.6% wrong.
+
+  THE WARMUP. llama-bench runs an untimed warmup whose cycles the counter also
+  sees. Running -r 2 and -r 10 and differencing removes it:
+
+      r = 2    61,203,053,628   61,333,901,568   62,644,002,984
+      r = 10  307,768,367,196  308,160,576,576  307,987,936,884
+      per rep (difference over 8):   30,780,663,436 cycles
+
+  Cross-check: the r = 2 runs give 30,863,493,030 per rep on their own, so the
+  warmup contributes essentially nothing and the two estimates agree to 0.3%.
+
+  Activation quantisation is outside both instrumented regions -- the glue
+  receives act_scales and act_sums as parameters -- so it sits in T_other for
+  both arms, as it must.
+
+
+3. THE RESULT
+------------------------------------------------------------------------------
+
+      t5b    wall per 128-token rep   4.905 s
+             matmuls                  2.138 s   =  43.6 % of generation
+      shared non-matmul work          2.768 s
+      i2_s   wall per 128-token rep   5.479 s
+             matmuls (by difference)  2.711 s
+
+      in-situ matmul ratio  i2_s / t5b = 1.268     -- t5b is FASTER in situ
+
+  Per token, and against the isolated replay at four threads:
+
+      kernel   in situ    replay    ratio
+      t5b      16.70 ms   16.90 ms   0.988    the replay predicts it
+      i2_s     21.18 ms   13.19 ms   1.606    the replay does NOT
+
+  IT IS CANDIDATE (a). The replay predicts this project's own kernel to within
+  1.2%, and mispredicts llama.cpp's i2_s path by 61%. The effective in-situ
+  arithmetic ratio is therefore
+
+      S_eff = 2.43 / 1.606 = 1.51
+
+  against Sigma = 1.86 at four threads, and S < Sigma HOLDS. The condition was
+  right; section 7.2 was measuring the wrong baseline for it.
+
+
+4. WHAT THIS MEANS, AND WHAT IT DOES NOT
+------------------------------------------------------------------------------
+
+  The theory in section 5 survives intact and now predicts the four-thread
+  result instead of contradicting it. What does not survive is the use of
+  bitnet_vec_dot_i2_i8_s_reference as a stand-in for llama.cpp's real i2_s
+  performance: it is 1.6x faster than what the model actually runs, so every
+  ratio computed against it -- including the 2.43 -- flatters the baseline.
+
+  This does NOT change any end-to-end number. Sections 7.4 and 7.6 measure whole
+  models through llama-bench and never used the reference kernel. It changes the
+  interpretation of section 7.2 and 7.3, which should be read as a comparison
+  between kernels rather than as a prediction about the model.
+
+  NOT ESTABLISHED. Why the in-situ i2_s path costs 1.6x its reference kernel.
+  The dispatch, the accumulator fold and the per-column post-processing are all
+  candidates and none is isolated here. A second counter in the i2_s path would
+  settle it, at the cost of perturbing the control arm.
+
+  Also not established: any of this on a quiet machine. The three passes agree
+  to better than 1% on the cycle counts, which are insensitive to load because
+  they measure work rather than wall time; the tg128 rates they are divided by
+  are not, and their spread is the dominant uncertainty here.

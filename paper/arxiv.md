@@ -11,7 +11,7 @@ abstract: |
   We introduce **t5b**, a base-3 packing that places five ternary values in one
   byte at exactly 1.600 bits per weight, and an AVX2 kernel that recovers all
   five digits from the packed byte using four independent `vpmulhuw`
-  instructions, exploiting the fact that a five-trit byte is bounded by 242 and
+  instructions per 16-bit view — eight per 32-byte block — exploiting the fact that a five-trit byte is bounded by 242 and
   therefore lies strictly inside the exactness range of the corresponding magic
   multipliers. The kernel performs its multiply-accumulate directly on the
   digits with `vpmaddubsw`, so no weight is ever materialised.
@@ -25,6 +25,10 @@ abstract: |
   $1.132\times$ prompt throughput and $1.143\times$ generation throughput, faster
   in five of five invocations. Output is bit-identical: perplexity over 20,480 tokens of
   WikiText-2 agrees to six significant figures with the two-bit baseline.
+  Against `TQ1_0`, `llama.cpp`'s own base-3 ternary type and the nearest prior
+  art, the margin is narrower and we report it as such: 1.60755 against 1.68750
+  achieved bits per weight, 4.7% of the payload, plus a prompt-processing
+  advantage that comes from having a batched kernel rather than from the packing.
   We further report that 4.76% of the model's feed-forward neurons are
   identically zero, that the dead index sets of the gate and up projections
   coincide in all thirty layers, and that an independent fine-tune revives none
@@ -371,7 +375,7 @@ is lane width rather than base 3. Operating on `uint16` lanes, the contraction
 must use `vpmaddwd`, which covers 16 lanes where `vpmaddubsw` covers 32, and the
 quotient chain issues on the same multiply port as the contraction. Per 160
 weights the word variant issues 19 multiply-port instructions against the byte
-variant's 13, and the measured rates are 29.83 and 33.83 GMAC/s per core
+variant's 13, and the measured rates are 30.04 and 33.74 GMAC/s per core
 respectively (§7.2).
 
 ## 4.4 Blocking for batched operation
@@ -511,7 +515,10 @@ upstream benchmark.
 
 ## 7.1 Correctness
 
-**Unit level.** 184,228 assertions across five suites, zero failures. The
+**Unit level.** 184,228 assertions across five suites, zero failures; of these
+the 177,734 covering the format and both kernel variants are in the public
+repository and run from a clone with a compiler alone (`make test`). The other
+three suites cover parts of the wider project not published here. The
 kernels are checked against scalar references derived independently from the
 format specification rather than from the implemented identities, so a shared
 derivation error cannot pass. Coverage includes exhaustive verification of the
@@ -555,7 +562,7 @@ One core, weights resident in L2 so that transport cannot bind:
 
 | kernel | GMAC/s | instr | mul | spills | weights | mul ceiling | of it |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `i2_s` (upstream) | 81.93 | 21 | 4 | 0 | 128 | 131.4 | 62% |
+| `i2_s` (upstream) | 81.93 | 21 | 4 | 0 | 128 | 130.9 | 63% |
 | t10 (word variant) | 30.04 | 50.25 | 19.25 | 8.25 | 160 | 34.6 | 87% |
 | **t5b (byte variant)** | **33.74** | 47 | 13 | 0 | 160 | 50.5 | 67% |
 
@@ -571,7 +578,7 @@ $S = 81.93/33.74 = 2.43$.
 ## 7.3 Weight traffic of one token
 
 Replaying the matrix operations of one token over the model's real tensor
-shapes and full 940 MB footprint, best of five, arms rotated:
+shapes and full weight footprint of both arms together, 940 MB, of which the 521 MB of `i2_s` codes is what a single arm streams, best of five, arms rotated:
 
 | threads | `i2_s` | t10 | t5b | t5b/`i2_s` |
 |---:|---:|---:|---:|---:|
@@ -600,26 +607,35 @@ Faster in 5 of 5 invocations on both measures; per-invocation ratios 1.096,
 1.112, 1.119, 1.253, 1.132 (prompt) and 1.099, 1.133, 1.123, 1.242, 1.143
 (generation).
 
-**The four-thread result contradicts §5.3's own prediction, and we do not fully
-explain it.** From $S=2.43$ and $\Sigma_4 = 1.86$, inequality~(18) predicts a
-loss at four threads, and the isolated weight-traffic replay of §7.3 delivers
-one ($0.780\times$). The model does not: at four threads it gains
-$1.132\times$/$1.143\times$. §7.4's own analysis of why the model gains *less*
-than the replay — weights are roughly 30% of a token — cannot explain a change
-of sign.
+**The four-thread result contradicted §5.3's prediction; the contradiction is
+now resolved, and the prediction was right.** From $S=2.43$ and $\Sigma_4=1.86$,
+(18) predicts a loss at four threads and the isolated replay of §7.3 delivers
+one ($0.780\times$); the model gains $1.132\times$. Instrumenting the glue with
+a cycle counter — `rdtsc` at the invariant TSC rate of 3.599978 GHz, not the
+core clock, with `llama-bench`'s untimed warmup removed by differencing $r=2$
+against $r=10$ — gives the matmul time directly for one arm, and by difference
+for the other, since everything else a token does is identical:
 
-Two candidates, neither yet measured. First, the $S$ of §7.2 is the ratio of two
-*isolated kernels*, and `llama.cpp`'s in-situ `i2_s` path is not that kernel: it
-carries the `llamafile_sgemm` dispatch, the f32$\to$i8 activation quantisation
-and its own accumulator fold, so the effective in-situ $S$ may be materially
-below 2.43. Second, the non-matmul 70% of a token occupies the memory system as
-well, so the bandwidth actually left to the weight stream at four threads may be
-lower than the isolated measurement of §5.3 suggests, raising the effective
-$\Sigma$. The first would mean §7.2 measures the wrong baseline for this
-purpose; the second would mean §5.3 does. **Resolving this requires an in-situ
-measurement of the per-kernel rate ratio, which we have not made**, and we
-prefer to state the contradiction than to pick whichever reading flatters the
-result.
+| kernel | in situ | replay (§7.3) | ratio |
+|---|---:|---:|---:|
+| t5b | 16.70 ms/token | 16.90 ms | **0.988** |
+| `i2_s` | 21.18 ms/token | 13.19 ms | **1.606** |
+
+The replay predicts *our* kernel to 1.2% and mispredicts `llama.cpp`'s `i2_s`
+path by 61%. The effective in-situ ratio is therefore
+$S_{\text{eff}} = 2.43/1.606 = 1.51$ against $\Sigma_4 = 1.86$, so
+$S < \Sigma$ **holds** at four threads and (18) predicts the observed gain
+rather than contradicting it.
+
+What does not survive is the use of `bitnet_vec_dot_i2_i8_s_reference` as a
+stand-in for `llama.cpp`'s real `i2_s` performance: it is $1.6\times$ faster than
+what the model runs, so every ratio computed against it — the 2.43 included —
+flatters the baseline. No end-to-end number changes; §7.4 and §7.6 measure whole
+models and never used the reference kernel. Matmuls are **43.6%** of generation
+wall time, not the 30% §7.4a estimates from the replay. Why the in-situ `i2_s`
+path costs $1.6\times$ its reference kernel is not established here; the
+dispatch, the accumulator fold and the per-column post-processing are all
+candidates, and isolating them would mean instrumenting the control arm.
 
 **Prompt length.** $1.106$, $1.152$, $1.180$ and $1.113$ at 64, 256, 1024 and
 2048 tokens: the advantage does not decay with length. We had predicted decay
@@ -671,6 +687,55 @@ tile lives in `ggml_gemm_i2_i8_s`.
 
 ---
 
+### 7.6 Against `TQ1_0`, the nearest prior art
+
+§1 records that the base-3 packing is `TQ1_0`'s. This section measures against
+it. The comparison file is produced by re-encoding the same ternary values into
+`TQ1_0`'s block layout, with the per-tensor `i2_s` scale written into every
+block's f16 field, so the two files carry identical weights.
+
+| | file | ternary payload | achieved bits/weight |
+|---|---:|---:|---:|
+| `i2_s` | 1,187,801,280 | 521,011,200 | 2.00000 |
+| `TQ1_0` | 1,106,386,560 | 439,603,200 | 1.68750 |
+| **t5b** | **1,085,565,120** | **418,775,040** | **1.60755** |
+
+`TQ1_0`'s 1.6875 is $54$ bytes per 256 weights: 48 for the five-per-byte codes,
+4 for a 16-element remainder at two bits, and 2 for the f16 block scale. t5b's
+1.60755 is $32$ bytes per 160 weights plus the tail waste at $K=6912$ and one
+32-byte record per tensor.
+
+**On size the honest margin is small.** 4.7% of the ternary payload and 1.9% of
+the file. Four fifths of the saving this work reports against `i2_s` was already
+present in the vendored tree under an upstream type number; the remaining fifth
+is what the per-tensor scale model contributes.
+
+**On speed the margin is large and mostly not about the packing.** Three
+rotated `llama-bench` invocations, all three files in each:
+
+| | `pp512` (t/s) | `tg128` (t/s) |
+|---|---|---|
+| `i2_s` | 122.25 ± 1.52, 77.06 ± 4.49, 118.12 ± 3.26 | 23.61, 15.27, 23.56 |
+| `TQ1_0` | 48.27 ± 0.73, 43.95 ± 5.26, 49.01 ± 0.29 | 21.68, 16.07, 22.27 |
+| **t5b** | 130.65 ± 4.35, 137.38 ± 0.52, 128.17 ± 8.07 | 22.95, 26.43, 26.43 |
+
+`TQ1_0` loses prompt processing by a factor of about three, and the reason is
+structural rather than arithmetic: `i2_s` has a `llamafile_sgemm` case upstream,
+t5b has one because we wrote it, and `TQ1_0` has none — so it processes a prompt
+one activation column at a time. **A `TQ1_0` sgemm case, which nobody has
+written, would be expected to erase that margin.** At `tg128`, where no format
+has a batched path to exploit, all three land within about 10% and the ordering
+does not survive this host's noise.
+
+**What survives.** Against `TQ1_0` on this machine, t5b is worth 4.7% of the
+ternary bytes, plus the fact of being wired into the batched path. The claim
+that a sub-two-bit ternary packing is itself novel does not survive and is
+withdrawn in §1. The narrower claims — the scale model that removes the block
+overhead, the `i2_s`-compatible interleave, the independent-quotient decode, the
+column-blocked kernel and the profitability condition — do.
+
+---
+
 # 8. Dead feed-forward neurons
 
 While quantifying the residual compressibility of the checkpoint we found that
@@ -711,18 +776,48 @@ provably zero cost to the layer: BitNet b1.58 places a sub-layer RMS norm
 (`ffn_sub_norm`) between the product and $W_{\text{down}}$, and an RMS norm
 divides by the root mean over all $6912$ entries. Deleting zeros changes that
 denominator. Skipping the rows in the kernel is exact; removing them is exact
-only if the norm's divisor is pinned to the original width. The latter is **not** blocked by the file format, which this work asserted for
-some hours without checking: `llama.cpp` reads `LLM_KV_FEED_FORWARD_LENGTH`
-through `get_key_or_arr` into a per-layer array (`llama-model.cpp:1117`,
-`llama-hparams.h:84` and `:314`), so per-layer feed-forward widths are a
-first-class concept and the removal requires no format change, no new tensor
-type and no kernel work. It is also *unconditionally* exact, precisely because
-the dead index sets coincide: $h_i = f(\text{gate}_i)\,\text{up}_i = f(0)\cdot 0 = 0$
-for any activation $f$, since $\text{up}_i$ vanishes too.
+only if the norm's divisor is pinned to the original width. **Skipping is exact; removing is not, and the difference matters.** Because the
+dead index sets coincide, $h_i = \sigma(\text{gate}_i)\,\text{up}_i = \sigma(0)\cdot 0 = 0$
+for any activation $\sigma$, so a kernel that skips the row and emits the value
+the shift identity requires is *unconditionally* exact.
+
+Deleting the neurons is a different operation and is **not** exact as it stands.
+BitNet places a sub-layer RMS norm (`ffn_sub_norm`) between the element-wise
+product and $W_{\text{down}}$, normalising over all $K=6912$ entries. Removing
+$d$ entries that are identically zero leaves the sum of squares unchanged while
+reducing the count, so the norm's output scales by
+$$
+\sqrt{\frac{K-d}{K}} ,
+$$
+which in layer 1, with $d/K = 0.4359$, is $0.751$ — a 25% change to that layer's
+entire feed-forward output. Removal is exact only with the divisor pinned to the
+original width.
+
+Two earlier claims in this work were both wrong about the second obstacle. It
+first said the removal is *blocked by the file format*: false — `llama.cpp`
+reads `LLM_KV_FEED_FORWARD_LENGTH` through `get_key_or_arr` into a per-layer
+array (`llama-model.cpp`, `llama-hparams.h`), so the container and the
+hyper-parameters both express per-layer widths. It then said the removal needs
+*no loader change*: also false — `src/models/bitnet.cpp` allocates
+$W_{\text{gate}}$, $W_{\text{up}}$, $W_{\text{down}}$ and `ffn_sub_norm` with
+the global `n_ff`, not `hparams.n_ff(i)`; only architectures such as `deci`,
+`openelm` and `gemma4` take the per-layer path. The truth is between them: the
+format and the hyper-parameters can express it, the BitNet loader does not use
+it, and four lines would change that. Neither the loader change nor the pinned
+divisor is implemented here.
 
 ---
 
 # 9. Limitations
+
+**The port analysis is Zen 2 specific before VNNI even enters.** §5.2 measures
+one multiply-class port at 1.05 instructions per cycle against 3.0–4.0 for the
+cheap classes. A reviewer ran the same benchmark on an Intel part with AVX-512
+and obtained 1.60 against 3.09: two 256-bit multiplier ports rather than one.
+The ratio that inequality~(18) turns on is therefore a property of the
+microarchitecture at a finer grain than the instruction set, and §5.3's surplus
+table would have to be re-measured on any other part before (18) could be
+applied to it.
 
 **One microarchitecture, and the decisive property is absent from it.** All
 results are from a single Zen 2 part reporting `avx2` and `fma` and nothing
@@ -749,17 +844,21 @@ loses. The headline is therefore the five-invocation replication of §7.4.
 comparison and the read-back from disk. Nine prompts and 20,480 perplexity
 tokens are a large but finite sample.
 
-**Task benchmarks.** None. The format question does not admit one — output is
-bit-identical, so every metric is identical by construction — but the different
-question of where this *model* stands is answered only by perplexity, where it
-reaches $96.8243 \pm 3.55673$ against Qwen2.5-3B-Instruct's
-$8.2837 \pm 0.21844$ on the same corpus and harness, a factor of 11.7. Perplexity across different tokenisers is loosely comparable
-at best; it is not loose by a factor of eleven.
+**Task benchmarks.** None, and for the format question none is possible: the
+output is bit-identical, so every metric is identical by construction. Where
+this *model* stands against others is a different question and this paper does
+not address it. We ran a cross-model perplexity comparison and do not report it
+as a result: the checkpoint's GGUF requires `tokenizer.ggml.pre` and the EOS id
+to be supplied through `--override-kv` because its own metadata is wrong, so an
+absolute perplexity from it is at least as likely to reflect a tokenisation
+artefact as the model. It does not affect the identity result of §7.1, where
+both arms are affected equally.
 
 **Engineering.** The blocked matrix–matrix kernel spills 181 times per loop at
 its chosen width; narrower widths spill less and measure slower. The type
-identifier 44 is not reserved by upstream. The dead-row saving of §8 is measured
-and, at the time of writing, being implemented.
+identifier used (43) is not reserved by upstream, so a stock `llama.cpp` cannot
+read a t5b file by construction rather than by accident. Neither the row skip
+nor the neuron removal of §8 is implemented.
 
 ---
 
@@ -798,30 +897,37 @@ cited here are public under the Apache License 2.0 at
 
 > **https://github.com/purpleskulll/bitnet-t5b**
 
-Every figure is recomputed by a script in that repository and recorded in a file
-under `results/`, each stating its own reproduction command. No model weights
-are distributed and no upstream source is redistributed verbatim; the
-integration is applied as a patch to an unmodified `llama.cpp` checkout, and the
-three files that reproduce or adapt an upstream contract say so in their headers
-and in `NOTICE`.
+No model weights are distributed and no upstream source is redistributed
+verbatim; the integration is applied as a patch to a checkout the user supplies,
+and the files that reproduce or adapt an upstream contract say so in their own
+headers and in `NOTICE`.
 
-| claim | evidence |
+| claim | file |
 |---|---|
-| code histogram, absence of code 3, entropy | `results/tensor_structure.txt`, `results/real_weights_check.txt` |
-| instruction-port throughputs $\pi$ | `src_modifications/bench/bench_ports.c` |
-| surplus $\Sigma$ against core count | `results/thread_headroom.txt` |
-| kernel rates, instruction and spill counts | `results/weight_density.txt` |
-| weight traffic of one token | `src_modifications/bench/bench_token.c` |
-| end-to-end throughput, all harnesses | `results/inference_t5b.txt` |
-| perplexity agreement and the Qwen comparison | `results/perplexity_t5b.txt` |
+| code histogram, code 3 absence, entropy | `results/tensor_structure.txt`, `results/real_weights_check.txt` |
+| instruction-port throughput $\pi$ | `benchmarks/bench_ports.c` |
+| surplus $\Sigma$ against core count | `results/thread_headroom.txt`, `benchmarks/bench_threads.c` |
+| kernel rates, instruction and spill counts | `results/weight_density.txt`, `benchmarks/bench_alu.c` |
+| weight traffic of one token | `benchmarks/bench_token.c` |
+| end-to-end throughput | `results/inference_t5b.txt` |
+| perplexity agreement between the formats | `results/perplexity_t5b.txt` |
 | round trip on real weights | `results/real_weights_check.txt` |
 | dead feed-forward neurons | `results/dead_neurons.txt`, `tools/dead_neurons.py` |
-| the design document, claim by claim | `results/phase_status.txt` |
 
-The format, kernels and tests are in `src_modifications/ternary_t5b.{c,h}` and
-`src_modifications/tests/`; the converter is `tools/gguf_to_t5b.py`; the
-integration into `llama.cpp` is applied by `scripts/apply_integration.py` and
-built by `Dockerfile.t5b`.
+The format and its kernels are `src/ternary_t5b.{c,h}`, the `ggml`-facing
+contract `src/ggml_t5b_glue.{c,h}`, the suite `src/test_t5b.c`; the word-lane
+variant of §4.3 is `src/ternary_t10.{c,h}`; the converter is
+`tools/gguf_to_t5b.py`.
+
+**What the public repository does not contain.** The measurements that need a
+model — §7.4's end-to-end table, the perplexity agreement — additionally require
+a `llama.cpp` build carrying the type, a converted GGUF and the checkpoint
+itself. The integration is supplied as a patch against a named upstream commit
+rather than as copied sources, and the `i2_s` reference kernel used as the
+baseline is fetched from that commit by a script rather than redistributed.
+Everything else — the packing, the kernels, the suite, all four benchmarks, the
+converters and every evidence file — builds and runs from a clone with a
+compiler and Python alone.
 
 # References
 
@@ -838,15 +944,15 @@ built by `Dockerfile.t5b`.
 - Wei, J., Cao, S., Cao, T., Ma, L., Wang, L., Zhang, Y., Yang, M. *T-MAC: CPU
   Renaissance via Table Lookup for Low-Bit LLM Deployment on Edge.* EuroSys,
   2025. arXiv:2407.00088.
-- compilade et al. *ggml: add ternary quantization types TQ1_0 and TQ2_0.*
+- compilade. *ggml-quants: ternary packing for TriLMs and BitNet b1.58.*
   llama.cpp pull request #8151, August 2024.
-- *Litespark Inference for CPUs: Ultra-Fast SIMD Framework for Ternary
-  (1.58-bit) Language Models.* arXiv:2605.06485.
+- *Litespark Inference on Consumer CPUs: Custom SIMD Kernels for Ternary Neural
+  Networks.* arXiv:2605.06485.
 - Han, S., Mao, H., Dally, W. J. *Deep Compression: Compressing Deep Neural
   Networks with Pruning, Trained Quantization and Huffman Coding.* ICLR, 2016.
   arXiv:1510.00149.
-- Zhang, T. et al. *DFloat11: Lossless Compression of Large Language Models.*
-  arXiv:2504.11651, 2025.
+- Zhang, T. et al. *70% Size, 100% Accuracy: Lossless LLM Compression for
+  Efficient GPU Inference via Dynamic-Length Float.* arXiv:2504.11651, 2025.
 - Gerganov, G. et al. *llama.cpp / ggml.*
 - Merity, S., Xiong, C., Bradbury, J., Socher, R. *Pointer Sentinel Mixture
   Models.* arXiv:1609.07843, 2016. (WikiText-2.)

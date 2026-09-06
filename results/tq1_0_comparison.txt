@@ -1,0 +1,305 @@
+THE 1.600-BIT FORMAT AGAINST llama.cpp'S OWN TQ1_0, ON ONE MACHINE
+==============================================================================
+
+  Reproduce:
+      # 1. write the TQ1_0 file from the ternary weights already in the i2_s
+      #    file (about 20 s, needs ~1.1 GB free). No checkpoint download and no
+      #    llama-quantize: TQ1_0 stores the SAME trits under the same radix-3
+      #    idea, so the conversion is exact.
+      python3 tools/gguf_to_tq1_0.py models/ggml-model-i2_s.gguf \
+                                     models/ggml-model-tq1_0.gguf
+      python3 tools/gguf_to_tq1_0.py models/ggml-model-i2_s.gguf \
+                                     models/ggml-model-tq1_0.gguf \
+                                     --verify --tensors 8
+
+      # 2. put all three files where the image can see them
+      scp models/ggml-model-{i2_s,t5b,tq1_0}.gguf \
+          assets/bitnet_chat_template.jinja root@<host>:/root/tq1-compare/
+
+      # 3. all three through the SAME binary, one invocation, load-gated
+      ssh root@<host> '/root/tq1-compare/bench.sh'      # see section 5
+
+  WHY THIS FILE EXISTS
+  --------------------
+  A reviewer pointed out that llama.cpp already carries a sub-two-bit ternary
+  type of its own -- TQ1_0, 1.6875 bits/weight, upstream since 2024 -- and that
+  it is the nearest prior art to this project's t5b. It is not in some other
+  repository. It is in the tree this project vendored, compiled and modified:
+  ggml-common.h:266 for the struct, ggml-quants.c:2244/2356 for the codec,
+  ggml.c:897 for the traits, ggml-cpu.c:401 for the CPU hookup. It was not
+  noticed.
+
+  So the comparison had to be run, and it had to be run on the same machine,
+  through the same binary, with the same weights, or it would not settle
+  anything.
+
+
+1. THE THREE FILES
+------------------------------------------------------------------------------
+
+  The same 2,084,044,800 ternary weights, three packings. Everything else in
+  the file -- the f16 token embedding (656,670,720 B, 55.3 % of the i2_s file),
+  121 f32 norm tensors, the 8,351,360-byte header -- is byte-identical across
+  all three and does not move.
+
+                         file bytes      GiB    ternary payload   payload
+                                                                  bits/weight
+    i2_s              1,187,801,280   1.1062        521,011,200   2.00000
+    tq1_0 (upstream)  1,106,386,560   1.0304        439,603,200   1.68750
+    t5b   (this repo) 1,085,565,120   1.0110        418,775,040   1.60755
+
+  Achieved, not claimed: the payload figure is the number of bytes the file
+  actually spends on ternary weights divided by the number of weights.
+
+    TQ1_0   54 bytes / 256 weights  = 1.68750 bits/weight   (48 qs + 4 qh + f16 d)
+    t5b     32 bytes / 160 weights  = 1.60000 bits/weight nominal, plus
+            0.00755 for the row padding at K=6912 (6912/160 = 43.2, so 44
+            blocks per row, 1,966,080 wasted bytes over 30 tensors) and
+            0.0000258 for the 210 carried-over 32-byte tails
+              -> 1.60755 achieved
+
+  t5b is smaller than TQ1_0 by 4.74 % of the ternary payload and by 1.88 % of
+  the file. Against i2_s, TQ1_0 already takes 81.4 MB off the file and t5b
+  takes 102.2 MB. In other words: of the saving this project reported against
+  i2_s, four fifths was already available in the tree.
+
+  Whole-file bits per ternary weight -- what the file costs on disk per weight
+  it carries -- is 4.55960 (i2_s), 4.24707 (TQ1_0), 4.16715 (t5b). The gap
+  between the three formats is small at this level because the f16 embedding
+  dominates the file and none of them touch it.
+
+
+2. THE CONVERSION IS EXACT, AND THE CHECK CAN FAIL
+------------------------------------------------------------------------------
+
+  tools/gguf_to_tq1_0.py derives its packing from dequantize_row_tq1_0
+  (ggml-quants.c:2356) -- the function that will read the file -- not from the
+  encoder and not from a reading of the struct. Three checks, in order of
+  strength.
+
+  (a) The codec over its whole domain. Every one of the 243 five-trit words and
+      every one of the 81 four-trit tail words, encoded and read back through
+      the decoder's own arithmetic, `(byte * pow3[n]) & 0xFF` then `(q*3) >> 8`:
+
+          243 five-trit words, 0 mismatches
+           81 tail words,      0 mismatches
+
+      This is the entire domain, so it is not a sample. The tail is a separate
+      arm because it uses a different scheme -- four trits shifted up one place
+      by the encoder's `q *= 3` at ggml-quants.c:2301 -- and a transcription
+      that gets qs right and qh wrong produces a file that still loads.
+
+  (b) Real weights, decoder against source. Three tensors spanning both shapes
+      in the model, each unpacked from the written TQ1_0 bytes and compared
+      against the i2_s trits:
+
+        blk.0.ffn_down.weight    200 random positions: 0 bad   all 17,694,720: 0 bad
+        blk.21.attn_v.weight     200 random positions: 0 bad   all  1,638,400: 0 bad
+        blk.9.attn_v.weight      200 random positions: 0 bad   all  1,638,400: 0 bad
+        TOTAL  600 sampled positions, 0 mismatches
+               20,971,520 weights compared exhaustively, 0 mismatches
+
+      Re-reading both finished files independently (--verify --tensors 8)
+      widens this to 8 tensors, 1,600 sampled positions and 59,965,440 weights
+      compared in full: 0 mismatches, and every one of the 6,400 to 69,120
+      blocks per tensor carries the same f16 `d`.
+
+  (c) The same check made to go RED on purpose. A check reporting zero is worth
+      nothing until it has been shown to report non-zero. On
+      blk.5.attn_q.weight, 6,553,600 weights:
+
+        unmodified                                          0 mismatches
+        one code byte in block 0 flipped by one bit         1 mismatch
+        qs[44:48] and qh[0:4] exchanged in every block     579,751 mismatches
+        qh packed without the encoder's `q *= 3` shift     263,616 mismatches
+
+      The two deliberate defects are the exact transcription errors this kind
+      of hand port produces. The check catches all three, including the
+      single-bit one.
+
+  THE ONE INEXACT STEP, STATED RATHER THAN IMPLIED
+  i2_s carries one f32 scale per tensor (ggml-cpu.c:1505 reads it at
+  ne00*ne01/4). TQ1_0 carries an f16 scale per block. Since the i2_s scale is
+  constant across a tensor, writing it into every block reproduces the same
+  weights -- but f16 has 11 significant bits, so the scale itself is rounded.
+  Worst case over the 210 tensors:
+
+      blk.15.ffn_up.weight   2.1298775672912598 -> 2.12890625
+                             relative error 4.560e-04
+
+  The ternary weights are exact; only the per-tensor scale moves, by at most
+  one part in 2,192. This is TQ1_0's design, not a defect of the conversion.
+
+
+3. IT LOADS, AND IT ANSWERS
+------------------------------------------------------------------------------
+
+  llama-cli, build b1-390c307, the same image the other two files run in.
+  Nothing in the loader had to be taught to read this file: TQ1_0 is
+  GGML_TYPE_TQ1_0 = 34 (ggml.h:424), already an upstream type with traits at
+  ggml.c:897 and a CPU hookup at ggml-cpu.c:401.
+
+      > Name the three primary colours of light.
+
+      1. The primary colors of light are blue, green, and red.
+
+      [ Prompt: 46.8 t/s | Generation: 24.6 t/s ]
+
+  The same answer the i2_s and t5b files give, and it terminated on its own
+  after twelve tokens against -n 60.
+
+
+4. OUTPUT IDENTITY, WITH A CONTROL THAT SHOWS THE CHECK CAN FAIL
+------------------------------------------------------------------------------
+
+  Three prompts x three model files, greedy (--temp 0), seed 1234, -t 4,
+  --no-warmup, one binary, one container. The only variable is the path on -m.
+
+  The i2_s and t5b builds print a kernel counter ([bitnet-ternary] /
+  [bitnet-t5b]) into the captured stream and TQ1_0 has none; those lines are
+  build diagnostics, not model output, and are stripped before comparison.
+  Nothing else is touched.
+
+  sha256 of the generated text:
+
+    9b08f44f…76233d   i2_s p1    e4fe22f0…ac4e61   i2_s p2    805897c4…b5fabd   i2_s p3
+    9b08f44f…76233d   tq1_0 p1   e4fe22f0…ac4e61   tq1_0 p2   805897c4…b5fabd   tq1_0 p3
+    9b08f44f…76233d   t5b p1     e4fe22f0…ac4e61   t5b p2     805897c4…b5fabd   t5b p3
+
+    prompt 1  "Name the three primary colours of light."   (57 bytes)
+              i2_s vs tq1_0 = IDENTICAL    i2_s vs t5b = IDENTICAL
+    prompt 2  "What is the capital of France?"            (209 bytes)
+              i2_s vs tq1_0 = IDENTICAL    i2_s vs t5b = IDENTICAL
+    prompt 3  "How many legs does a spider have?"         (286 bytes)
+              i2_s vs tq1_0 = IDENTICAL    i2_s vs t5b = IDENTICAL
+
+  NEGATIVE CONTROL -- same model file, different prompt. If these came back
+  IDENTICAL the nine comparisons above would be measuring nothing:
+
+    i2_s   p1vp2 DIFFERENT   p1vp3 DIFFERENT   p2vp3 DIFFERENT
+    tq1_0  p1vp2 DIFFERENT   p1vp3 DIFFERENT   p2vp3 DIFFERENT
+    t5b    p1vp2 DIFFERENT   p1vp3 DIFFERENT   p2vp3 DIFFERENT
+    cross: i2_s p1 vs tq1_0 p2 = DIFFERENT
+
+  What this does and does not establish. It establishes that the f16 rounding
+  of the scale (section 2) did not move the greedy argmax anywhere in these
+  three decodes. It does NOT establish equivalence: 552 bytes of output over
+  three prompts is a small sample, TQ1_0 quantises activations to q8_K where
+  i2_s uses its own i8_s path, and the two accumulate in a different order. A
+  divergence on some other prompt would be unsurprising and would not indicate
+  a packing error -- the packing is checked directly in section 2.
+
+
+5. llama-bench, THREE FILES, ONE INVOCATION, THREE TIMES
+------------------------------------------------------------------------------
+
+  AMD Ryzen 5 3600 (6 cores / 12 threads), shared host carrying a live
+  production workload. Each run is ONE llama-bench invocation with three -m
+  flags, so the three arms share the machine state:
+
+      llama-bench -m i2_s -m tq1_0 -m t5b -t 4 -p 512 -n 128 -r 4
+
+  gated on the 1-minute load average falling below 2.5 before starting.
+
+  llama-bench labels all three "bitnet-b1.58 2B Q1_0" -- the fork maps every
+  one of these ftypes to the same name -- so the arms are identified by the
+  size column, which is unambiguous: 1.10 GiB = i2_s, 1.02 GiB = TQ1_0,
+  1.00 GiB = t5b. In every run the size column came out in the -m order given,
+  which is the check that the rows are attributed correctly.
+
+  RUN 1  order i2_s, tq1_0, t5b       load 2.31 before -> 6.86 after
+    | 1.10 GiB  i2_s   | pp512 | 122.25 ± 1.52 |    | tg128 | 23.61 ± 0.24 |
+    | 1.02 GiB  tq1_0  | pp512 |  48.27 ± 0.73 |    | tg128 | 21.68 ± 1.20 |
+    | 1.00 GiB  t5b    | pp512 | 130.65 ± 4.35 |    | tg128 | 22.95 ± 0.58 |
+
+  RUN 2  order t5b, tq1_0, i2_s       load 2.09 before -> 10.16 after
+    | 1.00 GiB  t5b    | pp512 | 137.38 ± 0.52 |    | tg128 | 26.43 ± 0.34 |
+    | 1.02 GiB  tq1_0  | pp512 |  43.95 ± 5.26 |    | tg128 | 16.07 ± 2.19 |
+    | 1.10 GiB  i2_s   | pp512 |  77.06 ± 4.49 |    | tg128 | 15.27 ± 1.38 |
+
+  RUN 3  order tq1_0, i2_s, t5b       load 2.31 before -> 6.10 after
+    | 1.02 GiB  tq1_0  | pp512 |  49.01 ± 0.29 |    | tg128 | 22.27 ± 1.37 |
+    | 1.10 GiB  i2_s   | pp512 | 118.12 ± 3.26 |    | tg128 | 23.56 ± 0.33 |
+    | 1.00 GiB  t5b    | pp512 | 128.17 ± 8.07 |    | tg128 | 26.43 ± 0.37 |
+
+  WHY THREE RUNS. One run is not a measurement on this host. i2_s scored 122.25
+  at pp512 running first in run 1 and 77.06 running last in run 2 -- the same
+  file, the same binary, 1.59x apart, because the load climbs while the run
+  proceeds. Position in the invocation is a real confound worth up to 60 %, and
+  the order was rotated so that every model occupies the first slot once.
+
+  WHAT SURVIVES THE ROTATION
+
+    pp512, per model across the three runs:
+        i2_s    77.06 -- 122.25      (median 118.12)
+        tq1_0   43.95 --  49.01      (median  48.27)
+        t5b    128.17 -- 137.38      (median 130.65)
+
+    TQ1_0's BEST pp512, from the first slot under the lightest load (49.01), is
+    below i2_s's WORST (77.06) and far below t5b's WORST (128.17). The ranges do
+    not touch. This is not position and it is not load.
+
+    tg128, per model across the three runs:
+        i2_s    15.27 -- 23.61       t5b 22.95 -- 26.43      tq1_0 16.07 -- 22.27
+
+    Run 2's token-generation numbers are contaminated -- i2_s scored 15.27 there
+    against 23.61 and 23.56 in the other two runs, at a load of 10.16. Across
+    the two clean runs the three formats sit within about 10 % of one another.
+    t5b's worst tg128 (22.95) does exceed TQ1_0's best (22.27), in all three
+    runs, but by 3 %, which is inside this host's demonstrated drift. Call that
+    suggestive, not established. TQ1_0 never leads on either metric in any run.
+
+  THE MECHANISM, VERIFIED RATHER THAN ASSUMED
+  The pp512 gap is not TQ1_0 lacking SIMD. Queried from the built image itself:
+
+      ggml_cpu_has_avx2 = 1   ggml_cpu_has_fma = 1   ggml_cpu_has_llamafile = 1
+
+  and arch/x86/quants.c:1376 is a hand-written AVX2 ggml_vec_dot_tq1_0_q8_K
+  guarded by `#if defined(__AVX2__)`, so it is compiled and it runs.
+
+  What TQ1_0 does not have in this build is a batched GEMM. llamafile's
+  sgemm.cpp has cases for F32, BF16, F16, Q8_0, Q4_0, Q5_0, IQ4_NL and
+  GGML_TYPE_I2_S (sgemm.cpp:4287) -- and this project contributed one for t5b,
+  which the run confirms fired (`[bitnet-t5b] sgemm=435120`). There is no
+  TQ1_0 case, so prompt processing falls back to one vec_dot per column.
+
+  The data says the same thing on its own. Ratio of pp512 to tg128, which is
+  roughly "how much does batching buy this format":
+
+      run 1   i2_s 5.18   t5b 5.69   tq1_0 2.23
+      run 3   i2_s 5.01   t5b 4.85   tq1_0 2.20
+
+  Both paths with an sgemm case get ~5x out of batching; TQ1_0 gets ~2.2x.
+  That is the signature of a missing GEMM path, not of a slow format.
+
+
+6. VERDICT
+------------------------------------------------------------------------------
+
+  On this machine, in this build, t5b beats TQ1_0 on both axes, and TQ1_0 is
+  not faster than t5b on any run or either metric -- but the two margins are
+  very different in kind, and only one of them is about the format. On SIZE the
+  honest number is small: 1.60755 against 1.68750 achieved bits per ternary
+  weight, 4.7 % of the payload and 1.9 % of the file. Four fifths of the saving
+  this project reported against i2_s was already sitting in the vendored tree
+  under an upstream type number, and the remaining fifth is what t5b actually
+  contributes on size. On SPEED the margin is large -- pp512 128-137 t/s against
+  44-49, with non-overlapping ranges across three rotated runs -- but it is
+  bought by an integration, not by the packing: I2_S has a llamafile sgemm case
+  upstream and t5b has one because this project wrote it, while TQ1_0 has none
+  and is left doing prompt processing one column at a time. At tg128, where
+  there is no batched path for anyone to have, the three formats land within
+  about 10 % and the ordering does not survive the host's noise. So what t5b is
+  worth against TQ1_0 here is 4.7 % of the ternary bytes, plus a prompt-
+  processing advantage that a TQ1_0 sgemm case nobody has written would be
+  expected to erase. The claim that should be retired is that a sub-two-bit
+  ternary packing was the novel part; the claim that survives is the narrower
+  one about the last 5 % and about having wired the format into the batched
+  path.
+
+  NOT ESTABLISHED HERE. Perplexity or any quality measure on the TQ1_0 file --
+  only three prompts of greedy output were compared, and section 2 checks the
+  packing, not the model. Whether TQ1_0 with an sgemm case would match t5b:
+  that case does not exist, so the comparison is between what is there. Any
+  number from a quiet machine: this host never went below a 2.09 one-minute
+  load during these runs.
