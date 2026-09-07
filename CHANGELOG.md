@@ -77,7 +77,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_patch_parity.py` | the shipped patch describes the same change as the script |
 | `tools/fix_patch_hunks.py --check` | the patch's `@@` counts match its content |
 | `tools/check_buildable.py` | every shipped source is named by a build rule |
-| `mutation_test.sh` | the suite kills fourteen injected kernel defects, twelve of which are defects |
+| `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
 The count is eight and was called seven until this list was written out: items 2
 and 3 are two distinct false statements about the same paragraph, made at

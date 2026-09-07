@@ -76,6 +76,26 @@ MUTATIONS=(
   "four digits per byte instead of five|ternary_t5b.h|s/define TERNARY_T5B_DIGITS     5/define TERNARY_T5B_DIGITS     4/|shared"
   "accumulator fold at 13 blocks, past the int16 bound|ternary_t5b.h|s/define TERNARY_T5B_FOLD      12/define TERNARY_T5B_FOLD      13/|shared"
   "accumulator fold at 32 blocks, upstream's value|ternary_t5b.h|s/define TERNARY_T5B_FOLD      12/define TERNARY_T5B_FOLD      32/|shared"
+  # ---- the GEMM path, which the mutations above do NOT reach -------------
+  # ternary_t5b_gemm_avx2 and its helpers were added as 344 lines with zero
+  # deletions, so every mutation aimed at t5b_block leaves them untouched --
+  # and that path carries the pp512 headline. The suite exercises it
+  # (run_gemm_case, test_gemm_zero_row_is_sum_a); whether those tests KILL a
+  # defect in it is a different question, and these ask it.
+  "gemm: column stride dropped, every column reads column 0|ternary_t5b.c|s/a + c \* astride + k \* TERNARY_T5B_BYTES/a + k * TERNARY_T5B_BYTES/|gemm"
+  "gemm: digit plane k off by one|ternary_t5b.c|s/t5b_spread(acc, q4, a, astride, 4, nc)/t5b_spread(acc, q4, a, astride, 3, nc)/|gemm"
+  "gemm: highest digit built from the wrong quotient|ternary_t5b.c|s/_mm256_sub_epi8(q3, t5b_triple(q4))/_mm256_sub_epi8(q3, t5b_triple(q3))/|gemm"
+  "gemm: lowest plane subtracts q2 instead of q1|ternary_t5b.c|s/_mm256_sub_epi8(x, t5b_triple(q1))/_mm256_sub_epi8(x, t5b_triple(q2))/|gemm"
+  "gemm: spread visits one column too few|ternary_t5b.c|s/for (size_t c = 0; c < nc; ++c)/for (size_t c = 0; c + 1 < nc; ++c)/|gemm"
+  # 812 is EQUIVALENT and 813 is not, which is the whole point of the pair.
+  # The paper's Proposition gives a SUFFICIENT exactness range, and it is
+  # conservative: it guarantees 812 only below x = 198, while the true first
+  # failure is 323 -- above every packed byte, so 812 cannot be caught. 813
+  # first fails at x = 242, which is EXACTLY the largest legal packed byte, so
+  # it is a real defect visible on one input value out of 243. If the suite
+  # kills it, the suite reaches that value; if not, that is a genuine hole.
+  "gemm: magic 811 -> 812 (first failure 323, above every byte)|ternary_t5b.c|s/_mm256_set1_epi16(811)/_mm256_set1_epi16(812)/|equivalent"
+  "gemm: magic 811 -> 813 (first failure 242, the largest legal byte)|ternary_t5b.c|s/_mm256_set1_epi16(811)/_mm256_set1_epi16(813)/|gemm"
 )
 
 # The two equivalence proofs, run here rather than asserted in a comment. Each
@@ -105,6 +125,17 @@ for x in range(65536):
 print(f"  vpsubb vs vpsubw over all 65,536 word lanes: differ on {d}, "
       f"low byte borrows on {b}"
       f"{'  <-- NOT equivalent' if d else ''}")
+
+# The magic multiplier for /81, at four values. The proposition's range is
+# sufficient, not necessary, so the value that matters is the FIRST ACTUAL
+# failure -- and whether it lies above 242, the largest packed byte.
+def first_fail(M):
+    return next(x for x in range(1 << 20) if ((x * M) >> 16) != x // 81)
+print("  magic for floor(x/81), first ACTUAL failure vs the 242-byte bound:")
+for M in (810, 811, 812, 813):
+    f = first_fail(M)
+    print(f"    M={M}  first failure x={f:<5} "
+          f"{'safe for every byte' if f > 242 else 'FAILS on a legal byte'}")
 PY
 }
 

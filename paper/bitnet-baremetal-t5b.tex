@@ -551,8 +551,8 @@ and every block and tail boundary.
 decoding, one binary, one seed: identical output by \code{diff}. A negative
 control confirms the comparison can fail.
 
-\paragraph{Model level, distribution.} Perplexity over 40 chunks of 512 tokens
-of WikiText-2 (\code{llama.cpp}'s own CI copy):
+\paragraph{Model level, distribution.} Perplexity over 40 chunks of 512
+tokens of WikiText-2, taken from \code{llama.cpp}'s CI copy:
 \[
 \mathrm{PPL}_{\code{i2\_s}}=\num{96.8243}\pm\num{3.55673},\qquad
 \mathrm{PPL}_{\code{t5b}}=\num{96.8243}\pm\num{3.55673}.
@@ -565,21 +565,31 @@ decoded string.
 
 \paragraph{How much that assertion count is worth.} An assertion count measures
 effort, not power, so the suite's power is measured directly by mutation:
-fourteen defects are injected one at a time into the kernel and its header ---
+twenty-one defects are injected one at a time into the kernel and its header ---
 each magic multiplier perturbed, the digit multiplication changed from $3y$ to
 $5y$, the odd-byte view shifted by seven instead of eight, the low-byte mask
 narrowed, two digit planes given each other's activations, the radix changed,
-the digit count reduced, and the accumulator fold raised from 12 to 13 and to
-upstream's 32. \textbf{Twelve are killed.}
+the digit count reduced, the accumulator fold raised from 12 to 13 and to
+upstream's 32, and six aimed at the column-blocked GEMM path specifically, which
+shares no code with the per-row one and carries the \code{pp512} result.
+\textbf{Eighteen are killed.}
 
-The remaining two survive, and checking rather than filing them is what makes
-the result meaningful: both are \emph{exactly equivalent} on every reachable
-input, proved exhaustively rather than argued. Replacing the magic multiplier
+One of the six is worth its own sentence. The proposition of
+\S\ref{sec:kernel} gives a \emph{sufficient} exactness range for a magic
+multiplier, and it is conservative: replacing 811 by 812 is guaranteed only
+below $x = 198$ but in fact first fails at 323, above every packed byte, so it
+is not a defect at all. Replacing it by 813 first fails at $x = 242$ --- exactly
+the largest legal packed byte --- so it is a defect visible on one input value
+in 243. The suite kills it.
+
+The remaining three survive, and checking rather than filing them is what makes
+the result meaningful: all three are \emph{exactly equivalent} on every
+reachable input, proved exhaustively rather than argued. Replacing the magic multiplier
 811 by 810 leaves $\lfloor x/81 \rfloor$ unchanged on all 256 byte values;
-replacing the byte-wise digit subtraction by a word-wise one changes nothing on
-any of the \num{65536} word lanes, because no low byte ever borrows --- the
-invariant \S\ref{sec:lane} asserts, confirmed independently of the text that
-asserts it. The script carries both proofs and fails if either mutant is ever
+replacing it by 812 leaves it unchanged for the same reason; and replacing the
+byte-wise digit subtraction by a word-wise one changes nothing on any of the
+\num{65536} word lanes, because no low byte ever borrows --- the invariant
+\S\ref{sec:lane} asserts, confirmed independently of the text that asserts it. The script carries both proofs and fails if either mutant is ever
 \emph{killed}, since that would mean the kernel had lost the property the proof
 rests on.
 
@@ -1082,13 +1092,13 @@ adequately unrolled implementation lands.
 Zen 2 it gives $S=\num{1.96}$ against the measured \num{2.428}, an error of
 \SI{-19}{\percent}, because the real loop is dependency-bound. Both are
 reported.
-\item The negative control did not fire. \code{llvm-mca} 23.1.0 assembles and
+\item {\sloppy The negative control did not fire. \code{llvm-mca} 23.1.0 assembles and
 times \code{VPDPBUSD} for \code{-mcpu=znver2}, a part without the instruction,
 and continues to under \code{-mattr=-avx512vnni,\discretionary{}{}{}-avxvnni},
 assigning it latency
 11 and throughput \num{1.00}. The tool cannot distinguish a legal VNNI sequence
 from an illegal one and so offers no check on this subsection beyond timing. The
-control is kept in place and reported failing.
+control is kept in place and reported failing.\par}
 \end{enumerate}
 
 Subject to all three, VNNI moves $S$ in the predicted direction --- against the

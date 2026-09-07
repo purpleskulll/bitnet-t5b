@@ -510,8 +510,8 @@ and every block and tail boundary.
 decoding, one binary, one seed: identical output by `diff`. A negative
 control confirms the comparison can fail.
 
-**Model level, distribution.**  Perplexity over 40 chunks of 512 tokens
-of WikiText-2 (`llama.cpp`'s own CI copy):
+**Model level, distribution.**  Perplexity over 40 chunks of 512
+tokens of WikiText-2, taken from `llama.cpp`'s CI copy:
 
 $$
 \mathrm{PPL}_{\texttt{i2\_s}}=96.8243\pm3.55673,\qquad
@@ -526,21 +526,31 @@ decoded string.
 
 **How much that assertion count is worth.**  An assertion count measures
 effort, not power, so the suite's power is measured directly by mutation:
-fourteen defects are injected one at a time into the kernel and its header ---
+twenty-one defects are injected one at a time into the kernel and its header ---
 each magic multiplier perturbed, the digit multiplication changed from $3y$ to
 $5y$, the odd-byte view shifted by seven instead of eight, the low-byte mask
 narrowed, two digit planes given each other's activations, the radix changed,
-the digit count reduced, and the accumulator fold raised from 12 to 13 and to
-upstream's 32. **Twelve are killed.**
+the digit count reduced, the accumulator fold raised from 12 to 13 and to
+upstream's 32, and six aimed at the column-blocked GEMM path specifically, which
+shares no code with the per-row one and carries the `pp512` result.
+**Eighteen are killed.**
 
-The remaining two survive, and checking rather than filing them is what makes
-the result meaningful: both are *exactly equivalent* on every reachable
-input, proved exhaustively rather than argued. Replacing the magic multiplier
+One of the six is worth its own sentence. The proposition of
+§4 gives a *sufficient* exactness range for a magic
+multiplier, and it is conservative: replacing 811 by 812 is guaranteed only
+below $x = 198$ but in fact first fails at 323, above every packed byte, so it
+is not a defect at all. Replacing it by 813 first fails at $x = 242$ --- exactly
+the largest legal packed byte --- so it is a defect visible on one input value
+in 243. The suite kills it.
+
+The remaining three survive, and checking rather than filing them is what makes
+the result meaningful: all three are *exactly equivalent* on every
+reachable input, proved exhaustively rather than argued. Replacing the magic multiplier
 811 by 810 leaves $\lfloor x/81 \rfloor$ unchanged on all 256 byte values;
-replacing the byte-wise digit subtraction by a word-wise one changes nothing on
-any of the 65,536 word lanes, because no low byte ever borrows --- the
-invariant §4.3 asserts, confirmed independently of the text that
-asserts it. The script carries both proofs and fails if either mutant is ever
+replacing it by 812 leaves it unchanged for the same reason; and replacing the
+byte-wise digit subtraction by a word-wise one changes nothing on any of the
+65,536 word lanes, because no low byte ever borrows --- the invariant
+§4.3 asserts, confirmed independently of the text that asserts it. The script carries both proofs and fails if either mutant is ever
 *killed*, since that would mean the kernel had lost the property the proof
 rests on.
 
@@ -996,13 +1006,13 @@ executed.** Three caveats bound what the numbers mean.
    Zen 2 it gives $S=1.96$ against the measured 2.428, an error of
    -19%, because the real loop is dependency-bound. Both are
    reported.
-3. The negative control did not fire. `llvm-mca` 23.1.0 assembles and
+3. { The negative control did not fire. `llvm-mca` 23.1.0 assembles and
    times `VPDPBUSD` for `-mcpu=znver2`, a part without the instruction,
    and continues to under `-mattr=-avx512vnni,\discretionary{}{}{}-avxvnni`,
    assigning it latency
    11 and throughput 1.00. The tool cannot distinguish a legal VNNI sequence
    from an illegal one and so offers no check on this subsection beyond timing. The
-   control is kept in place and reported failing.
+   control is kept in place and reported failing.\par}
 
 Subject to all three, VNNI moves $S$ in the predicted direction --- against the
 packed code, the baseline spending 4 of 17 operations in the contraction
