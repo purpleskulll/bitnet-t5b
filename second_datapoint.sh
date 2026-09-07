@@ -18,9 +18,27 @@
 #     independent team building for VNNI stores ternary weights at EIGHT bits
 #     for precisely that reason.
 #
-# One run of this script on a VNNI part turns the largest caveat in the paper
-# into a measurement. It needs no model, no Docker, and no privileges: the three
-# benchmarks it runs are self-contained C.
+# WHAT THIS SCRIPT DOES AND DOES NOT MEASURE -- READ THIS BEFORE QUOTING IT
+# ------------------------------------------------------------------------
+# It measures the FIRST of those two: the kernels on a second microarchitecture.
+# That is worth having and it is not the VNNI question.
+#
+# This header used to claim that one run on a VNNI part "turns the largest
+# caveat in the paper into a measurement". That was FALSE, and a reviewer caught
+# it the direct way: `objdump -d` over build/bench_alu and both kernel objects
+# finds ZERO vpdpbusd, on a host whose /proc/cpuinfo reports avx512_vnni and
+# with -march=native in the flags. No compiler contracts vpmaddubsw + vpaddw
+# into VPDPBUSD as an idiom; the instruction has to be written. So a run on a
+# VNNI machine measured the AVX2 kernels on an Intel part and nothing more.
+#
+# Step 5 below is the repair: it builds a kernel pair that DOES issue vpdpbusd,
+# verifies the instruction is present in the object rather than assuming it, and
+# times it against the AVX2 pair. On a host without VNNI it skips loudly. Until
+# somebody runs step 5 on real hardware, §9.1's VNNI figures remain a static
+# model whose own negative control failed.
+#
+# It needs no model, no Docker, and no privileges: everything it runs is
+# self-contained C.
 #
 # WHAT IT DOES NOT DO
 # It does not measure the model. bench_token replays the weight traffic of a
@@ -104,6 +122,32 @@ if [ "$HAVE_I2S" = 1 ]; then
     echo "    Paper at four threads: i2_s 13.19 ms, t5b 16.90 ms, ratio 0.780."
     ./build/bench_token 4 5 2>/dev/null | tail -12 || true
 fi
+echo
+echo "--- 5. VNNI: the one thing steps 1-4 CANNOT answer ---"
+echo "    Steps 1-4 run AVX2 kernels. On a VNNI part they measure a second"
+echo "    microarchitecture, NOT VNNI -- no compiler turns vpmaddubsw+vpaddw"
+echo "    into VPDPBUSD, so the AVX2 binaries contain none of it. Checked:"
+for b in build/bench_alu build/obj/ternary_t5b.o; do
+    [ -f "$b" ] && printf "      %-28s vpdpbusd: %s\n" "$b" \
+        "$(objdump -d "$b" 2>/dev/null | grep -c vpdpbusd || echo '?')"
+done
+echo
+if [ -x build/bench_vnni ]; then
+    echo "    build/bench_vnni contains $(objdump -d build/bench_vnni 2>/dev/null | grep -c vpdpbusd) vpdpbusd instructions."
+    if taskset -c 1 ./build/bench_vnni 2>/dev/null || ./build/bench_vnni; then
+        :
+    else
+        rc=$?
+        [ "$rc" = 3 ] && echo "    (exit 3: no VNNI on this CPU -- expected, and the correct outcome.)"
+    fi
+else
+    echo "    build/bench_vnni was not built: this compiler accepts neither"
+    echo "    -mavx512vnni nor -mavxvnni. The VNNI question stays open."
+fi
+echo
+echo "    Algorithm check, which runs everywhere (VPDPBUSD modelled in AVX2):"
+./build/bench_vnni_emu 2>/dev/null | grep -E "correctness|Built with" || \
+    echo "      bench_vnni_emu not built."
 echo
 echo "--- suites, so the numbers above come from a build that is correct ---"
 ./build/test_t5b 2>&1 | tail -2

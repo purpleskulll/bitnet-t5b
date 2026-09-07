@@ -40,9 +40,9 @@ BENCH_ALWAYS := $(BIN)/bench_ports
 BENCH_I2S    := $(BIN)/bench_alu $(BIN)/bench_threads $(BIN)/bench_token
 
 ifeq ($(HAVE_I2S),)
-BENCH := $(BENCH_ALWAYS)
+BENCH := $(BENCH_ALWAYS) $(BIN)/bench_vnni $(BIN)/bench_vnni_emu
 else
-BENCH := $(BENCH_ALWAYS) $(BENCH_I2S)
+BENCH := $(BENCH_ALWAYS) $(BENCH_I2S) $(BIN)/bench_vnni $(BIN)/bench_vnni_emu
 endif
 
 .PHONY: all test bench i2s-ref i2s-check clean
@@ -102,6 +102,35 @@ $(BIN)/bench_token: benchmarks/bench_token.c $(OBJ)/ggml_i2s_ternary.o \
                     $(OBJ)/ternary_t10.o $(OBJ)/ternary_t5b.o | $(OBJ)
 	$(CC) $(CFLAGS) -pthread $^ -o $@ $(LDLIBS)
 
+# The VNNI comparison. Two builds from ONE source, and both are needed:
+#
+#   bench_vnni      the real instruction. Only builds where the compiler accepts
+#                   -mavx512vnni or -mavxvnni, and refuses to RUN on a CPU
+#                   without the feature. This is the measurement.
+#   bench_vnni_emu  the same kernels with VPDPBUSD modelled in AVX2. Builds and
+#                   runs anywhere, checks the algorithm against exact
+#                   arithmetic, and prints no timings -- timing an emulation
+#                   against the instruction it emulates answers nothing.
+#
+# The split exists because this benchmark replaces a claim that was false: for
+# weeks second_datapoint.sh said a run on a VNNI part would answer the paper's
+# largest caveat, while `objdump -d` over its binaries found zero vpdpbusd. No
+# compiler contracts vpmaddubsw+vpaddw into VPDPBUSD; the instruction must be
+# written. bench_vnni writes it and then CHECKS it is there at runtime.
+VNNI_FLAGS := $(shell $(CC) -mavx512vnni -mavx512vl -E -x c /dev/null >/dev/null 2>&1 \
+                && echo '-mavx512vnni -mavx512vl' \
+                || ($(CC) -mavxvnni -E -x c /dev/null >/dev/null 2>&1 && echo '-mavxvnni'))
+
+$(BIN)/bench_vnni: benchmarks/bench_vnni.c $(OBJ)/ternary_t5b.o | $(OBJ)
+ifeq ($(VNNI_FLAGS),)
+	@echo '  SKIP bench_vnni: this compiler accepts neither -mavx512vnni nor -mavxvnni.'
+else
+	$(CC) $(CFLAGS) $(VNNI_FLAGS) $^ -o $@ $(LDLIBS)
+endif
+
+$(BIN)/bench_vnni_emu: benchmarks/bench_vnni.c $(OBJ)/ternary_t5b.o | $(OBJ)
+	$(CC) $(CFLAGS) -DT5B_EMULATE_VNNI $^ -o $@ $(LDLIBS)
+
 bench: $(BENCH)
 ifeq ($(HAVE_I2S),)
 	@echo ''
@@ -124,7 +153,7 @@ ifeq ($(HAVE_I2S),)
 	@echo '  ####################################################################'
 	@echo ''
 else
-	@echo 'built all four benchmarks (i2_s reference present)'
+	@echo 'built all benchmarks (i2_s reference present)'
 endif
 
 # ------------------------------------------------------------- the fetcher ---
