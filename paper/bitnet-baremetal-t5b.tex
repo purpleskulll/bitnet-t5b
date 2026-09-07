@@ -123,7 +123,14 @@ $\beta=2$ with a decode of three shifts and four masks per 128 weights.
 $\beta\approx\num{1.667}$ by table lookup, paying memory for the tables
 (\code{TL1} is at \num{2.0}); \code{llama.cpp}'s own \code{TQ1\_0} reaches
 \num{1.6875} by base-3 packing without a table, and \code{TQ2\_0}
-\num{2.0625}. In the
+\num{2.0625}; Spectra~1.1~\cite{spectra} publishes that family with a
+correctness theorem and CPU kernels as \code{TQ1} and \code{TQ2}, recommending
+exactly the $p=8$, $k=5$ this work uses. Every format named so far is lossless.
+In the lossy direction, \emph{Sherry}~\cite{sherry} reaches \num{1.25} bits by
+imposing 3:4 fine-grained sparsity on the ternary weights and packing four of
+them into five bits, restoring power-of-two alignment at the cost of a
+training-time constraint and of exactness --- a different trade from the one
+studied here, where the weights are unchanged bit for bit. In the
 opposite direction, \emph{Litespark} stores ternary weights at $\beta=8$, on the
 explicit grounds that ``using 2-bit packing would require unpacking weights
 before every computation, negating the performance benefit'' --- a decision made
@@ -160,16 +167,29 @@ a new quantisation scheme, and it composes with all three.
 \begin{enumerate}
 \item A \num{1.600}-bit variant of the \emph{known} base-3 packing
       (\S\ref{sec:format}). Five ternary values as the base-3 digits of a byte
-      is \code{TQ1\_0}'s construction, not ours; ours is the scale model --- one
-      per-tensor scale in place of \code{TQ1\_0}'s per-256-block f16 and its
-      16-element two-bit remainder, removing the block overhead entirely
-      (\num{1.600} against \num{1.6875}, \SI{20}{\percent} denser than
-      \code{i2\_s}) --- with an interleave identical to \code{i2\_s}'s.
-\item A table-free decode in four multiplies (\S\ref{sec:kernel}). Because a
-      five-trit byte satisfies $x\le\num{242}$, all four quotients
-      $\lfloor x/3^{j}\rfloor$ lie inside the exactness range of 16-bit magic
-      multipliers and are obtained \emph{independently} rather than as a serial
-      chain, collapsing a depth-five dependence to depth one.
+      is not ours: it is \code{TQ1\_0}'s construction in \code{llama.cpp}, and
+      it is published with a correctness theorem by Vaidhya et
+      al.~\cite{spectra} as Spectra~1.1's \code{TQ1}, whose $p=8$, $k=5$
+      recommendation and \num{1.6}-bit figure are the same as ours. Ours is the
+      scale model --- one per-tensor scale in place of \code{TQ1\_0}'s
+      per-256-block f16 and its 16-element two-bit remainder, removing the block
+      overhead entirely (\num{1.600} against \num{1.6875}, \SI{20}{\percent}
+      denser than \code{i2\_s}) --- with an interleave identical to
+      \code{i2\_s}'s.
+\item A decode of depth one rather than depth five (\S\ref{sec:kernel}). That a
+      multiplication-based decode avoids division and modulo is also known:
+      Spectra~1.1 exploits $3^{5}\approx 2^{8}$ to extract the trits
+      \emph{iteratively}, $b_{i+1}=(3b_{i})\wedge\texttt{0xFF}$ for
+      $i=0\dots4$, a strictly serial chain of five dependent multiplies. Ours is
+      the observation that a five-trit byte satisfies $x\le\num{242}$, so all
+      four quotients $\lfloor x/3^{j}\rfloor$ lie inside the exactness range of
+      16-bit magic multipliers and can be taken \textbf{independently, straight
+      from the original byte}, at one \code{vpmulhuw} each --- collapsing the
+      depth-five dependence to depth one. This costs more multiply-port
+      operations than the serial form and buys latency;
+      \S\ref{sec:condition} gives the condition under which that is the right
+      trade. No head-to-head measurement against Spectra's kernel was made:
+      their figures are from a Mac~M4 and an EPYC part, ours from one Zen~2 host.
 \item An explicit profitability condition (\S\ref{sec:condition}) derived
       from~\eqref{eq:roofline} and verified by measuring both $\pi$ and $B$
       rather than inferring either.
@@ -267,6 +287,18 @@ better; $k=10$ is admissible because $3^{10} = \num{59049} \le \num{65536}$. We
 implement both; \S\ref{sec:lane} shows they differ by $1.5\times$ in throughput
 for reasons of SIMD lane width alone, which is why the byte variant is the one
 deployed.
+
+\paragraph{Relation to Spectra 1.1's Theorem 1.} Vaidhya et al.~\cite{spectra}
+state the \emph{correctness} condition for this family: packing $k$ trits into a
+$p$-bit integer is lossless if and only if $2^{p} > 3^{k}$, and they likewise
+recommend $p=8$, $k=5$ for an effective \num{1.6} bits. The table above is the
+\emph{optimality} counterpart --- which admissible $(p,k)$ minimises $p/k$
+subject to $p$ being a whole machine word --- and every entry in it satisfies
+their condition by construction. We claim no priority over the condition, the
+recommendation or the resulting bit rate: all three are theirs, and $k=5$ is
+\code{TQ1\_0}'s construction in \code{llama.cpp} before either. What this
+subsection adds is the alignment argument making $k=10$ the only other candidate
+at the same density, which \S\ref{sec:lane} then rules out on lane width.
 
 \subsection{Tail}
 For $n$ not a multiple of $L$ the final block's unused slots take $c=1$
@@ -735,8 +767,11 @@ while the $4\times 4$ tile lives in \code{ggml\_gemm\_i2\_i8\_s}.
 
 \subsection{Against \code{TQ1\_0}, the nearest prior art}\label{sec:tq10}
 
-\S\ref{sec:contrib} records that the base-3 packing is \code{TQ1\_0}'s. This
-subsection measures against it. The comparison file is produced by re-encoding
+\S\ref{sec:contrib} records that the base-3 packing is \code{TQ1\_0}'s, and
+that Spectra~1.1~\cite{spectra} publishes the same $p=8$, $k=5$ construction
+with a correctness theorem. This subsection measures against \code{TQ1\_0},
+which is the form of it that ships in the codebase integrated into; no run
+against Spectra's own kernels was made. The comparison file is produced by re-encoding
 the same ternary values into \code{TQ1\_0}'s block layout, with the per-tensor
 \code{i2\_s} scale written into every block's f16 field, so the two files carry
 identical weights.
@@ -943,6 +978,15 @@ target & packed, cyc/block & baseline, cyc/block & $S$ \\
 \end{tabular}
 \end{center}
 
+\textbf{These are modelled numbers, and the licence for printing them is that
+the model was tested twice.} Once in-sample, against the host it was calibrated
+on (\SI{3.0}{\percent}); once \emph{out of sample}, against a machine it had
+never seen --- the reviewer run of \S\ref{sec:second} measured $S = \num{2.11}$
+on an Intel part, where this table predicts \num{2.098} and \num{2.317} for the
+two Intel targets. A model that reproduces its calibration set proves nothing;
+one that predicts a case withheld from it has earned a table. Every figure here
+is nonetheless labelled modelled, and the sections it feeds say so at each use.
+
 Two readings would overstate this table. \code{znver3}, \code{znver4} and
 \code{znver5} return \emph{identical} counts, so they are one prediction and not
 three: it holds four distinct predictions, not six. And every newer target sits
@@ -1008,6 +1052,18 @@ exits 3 rather than run on a CPU without the feature. A second build models
 \code{VPDPBUSD} in AVX2 so the algorithm can be checked where the instruction
 cannot execute; it passes on all 100 rows for all four kernels and deliberately
 prints no timings.
+
+\textbf{What is missing is therefore hardware access, and nothing else.} That
+sentence would have been an evasion before the paragraph above: the measurement
+was blocked by absent code, and a machine would not have produced it. It is now
+the whole of the remaining obstacle. The kernels are written, the instruction is
+verified present in the emitted object, the arithmetic is verified against exact
+\code{int64} on every row, the harness refuses to report a number it did not
+measure, and the benchmark needs no model, no container and no privileges. Every
+machine available to this work reports \code{avx2 fma} and nothing further. One
+run on a part with \code{avx512vnni} or \code{avx\_vnni} replaces the modelled
+figures below with measured ones, and until that run exists we report the model
+and label it as such.
 
 \subsection{A second microarchitecture, measured}\label{sec:second}
 
@@ -1185,6 +1241,15 @@ kernels, the suite, all four benchmarks, the converters and every evidence file
   Edge}. EuroSys, 2025. arXiv:2407.00088.
 \bibitem{tq10} compilade. \emph{ggml-quants: ternary packing for TriLMs and
   BitNet b1.58}. llama.cpp pull request \#8151, August 2024.
+\bibitem{spectra} T.~Vaidhya, A.~Kaushal, V.~Jain, F.~Couture-Harpin,
+  P.~Shishodia, M.~Behbahani, Y.~Nevmyvaka, I.~Rish. \emph{Spectra 1.1: Scaling
+  Laws and Efficient Inference for Ternary Language Models}. arXiv:2506.23025,
+  2025.
+
+\bibitem{sherry} H.~Huang, D.~Wu, Q.~Hu, G.~Yu, J.~Yang, J.~Zhu, X.~Liu,
+  D.~Wu. \emph{Sherry: Hardware-Efficient 1.25-Bit Ternary Quantization via
+  Fine-grained Sparsification}. arXiv:2601.07892, 2026.
+
 \bibitem{litespark} \emph{Litespark Inference on Consumer CPUs: Custom SIMD
   Kernels for Ternary Neural Networks}. arXiv:2605.06485.
 \bibitem{deepcompression} S.~Han, H.~Mao, W.~J.~Dally. \emph{Deep Compression:
