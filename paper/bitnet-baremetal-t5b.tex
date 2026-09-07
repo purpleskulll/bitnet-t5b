@@ -1248,61 +1248,14 @@ sits at or \emph{below} the Zen 2 value it was derived on, by at most
 \SI{16}{\percent}. The ratio never worsens on a wider machine, so the rule is
 worth applying rather than an accident of the one part that produced it.
 
-\section*{Appendix A: Corrections made during preparation}
+\section*{Corrections}
 
-Seven claims in earlier drafts of this paper were wrong and were corrected
-before submission. They are collected here rather than annotated through the
-body, so that the body states what holds and this states how it got there. Each
-was found by a named mechanism, and where that mechanism is now automated the
-gate step is given.
-
-\begin{enumerate}
-\item \textbf{The base-3 packing was claimed as novel.} It is \code{TQ1\_0}'s
-construction in \code{llama.cpp} and is published with a correctness theorem as
-Spectra~1.1's \code{TQ1}~\cite{spectra}. Withdrawn in \S\ref{sec:contrib};
-\S\ref{sec:tq10} measures against it. Found by a reviewer, twice --- first the
-pull request, then the paper.
-
-\item \textbf{``The removal needs no format change and no kernel work'' and
-``unconditionally exact on the product''} (dead-neuron removal). Both false:
-\code{src/models/bitnet.cpp} allocates with the global \code{n\_ff}, four lines
-must change, and the sub-layer RMS norm rescales the output by
-$\sqrt{(K-d)/K} = \num{0.751}$ in layer~1. Corrected in \S\ref{sec:dead}.
-
-\item \textbf{Matmuls were given as \SI{30}{\percent} of a token} from the
-standalone replay, while the in-situ counter of \S\ref{sec:endtoend} measures
-\SI{43.6}{\percent}. The replay is a lower bound and was read as an estimate.
-
-\item \textbf{Upstream's \code{int16} overflow was reported as ``200 of 200''}
-rows at $K = 6912$. Over all thirty such tensors it is \num{11998} of
-\num{12000}: with \SI{0.78}{\percent} of headroom the outcome turns on each row's
-own code mean. Found by extending the dot-product check from seven tensors to
-all 210.
-
-\item \textbf{``Four runs out of four''} at $1.165\times$ were four runs from the
-quietest window available; four further runs at ordinary load include one the
-denser code loses. The headline became the five-invocation replication.
-
-\item \textbf{The i2\_s matmul time was derived by difference} across two
-\code{llama-bench} runs on a host at load 2 to 10, which puts every fluctuation
-between them into that one number. Both arms are now probed at the same dispatch
-site. The stated reason for not instrumenting the control arm --- that it must
-stay unperturbed --- did not survive measurement: \code{bench\_probe\_cost.c}
-puts the probe at \SI{0.18}{\percent} of a matmul call.
-
-\item \textbf{\code{second\_datapoint.sh} claimed a run on a VNNI part would
-settle the VNNI question.} It would not have: no compiler emits
-\code{VPDPBUSD} from the AVX2 idiom, so its binaries contained none. Found by a
-reviewer with \code{objdump}. \code{bench\_vnni.c} writes the instruction and
-verifies at run time that its own binary contains it; \S\ref{sec:vnnimeas} is
-the resulting measurement.
-\end{enumerate}
-
-Three of the seven were found by a reviewer and four by checks written after the
-fact. Those checks are in the repository and run as gate steps: the two
-renderings of this paper are compared claim by claim, every path it names is
-resolved against the public tree, and the integration's three representations
-are checked against each other.
+Eight claims in earlier drafts of this paper were wrong and were corrected
+before submission --- among them the novelty of the packing, two statements
+about dead-neuron removal, and the assertion that a run on VNNI hardware would
+settle \S\ref{sec:microarch}. Each is listed with what replaced it and how it
+was found in \code{CHANGELOG.md} in the repository below, kept there rather than
+here so that this document states what holds.
 
 \section*{Data and code availability}
 

@@ -59,6 +59,9 @@ EXTERNAL = {
 # path and must resolve.
 ROOTS = ("src/", "benchmarks/", "tools/", "results/", "integration/", "paper/")
 
+# Named by the paper at the repository root rather than under a directory.
+ROOT_FILES = ("CHANGELOG.md", "Makefile", "NOTICE", "LICENSE")
+
 # Roots of the PRIVATE layout. These resolve while writing and for nobody else,
 # which is exactly the failure this file exists to catch -- so they are detected
 # and always reported, never filtered out. The first version of this check
