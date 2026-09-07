@@ -33,7 +33,14 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The tree a reader clones: the sibling when run from the private repository,
+# THIS one when run from the public repository itself. Assuming the sibling made
+# this silently skip inside a fresh clone -- the exact situation it exists to
+# check -- which is the same layout mistake it was written to catch.
 PUB = ROOT / "../bitnet-t5b"
+if not PUB.exists() or (ROOT / "Makefile").exists() and (ROOT / "benchmarks").exists():
+    PUB = ROOT
 PAPERS = [ROOT / "paper/arxiv.md", ROOT / "paper/bitnet-baremetal-t5b.tex"]
 
 # Named in the paper, deliberately absent from the public tree, with where each
