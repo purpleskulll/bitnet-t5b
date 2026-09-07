@@ -52,7 +52,9 @@ fluctuation between them into that one number. Both arms are now probed at the
 same dispatch site. The stated reason for not instrumenting the control arm —
 that it must stay unperturbed — did not survive measurement:
 `benchmarks/bench_probe_cost.c` puts the probe at 0.18% of a matmul call.
-*The measurement itself still needs a rebuilt container and has not been run.*
+*Since run: nine interleaved rounds give a median ratio of 1.257 against the
+1.268 the difference method derived, and the two matmul times agree to 2.3% and
+1.1%. The objection was right and the number it doubted survived it.*
 
 **8. `second_datapoint.sh` claimed a run on VNNI hardware would settle §9.1.**
 It would not have. No compiler emits `VPDPBUSD` from the `vpmaddubsw`+`vpaddw`

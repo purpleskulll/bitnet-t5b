@@ -382,28 +382,91 @@ int main(int argc, char **argv)
     double rate[4] = {0};
     const char *name[4] = { "i2_s AVX2", "i2_s VNNI", "t5b  AVX2", "t5b  VNNI" };
 
-    for (int k = 0; k < 4; ++k) {
-        double best = 0;
-        for (int rep = 0; rep < 5; ++rep) {
+    /* PAIRED, INTERLEAVED SAMPLING -- and this is the whole reason the result
+     * survives the host it was taken on.
+     *
+     * The first version timed the four kernels one after another, each for five
+     * blocks of 0.3 s. On a shared machine the load drifts BETWEEN those
+     * blocks, so the AVX2 and VNNI numbers came from different moments and the
+     * difference between them carried that drift. A reviewer ran it on a
+     * two-vCPU sandbox and reported, correctly, that the spread exceeded the
+     * effect: S rose in six runs of eight, a majority and not a separation.
+     *
+     * Here all four kernels are measured inside ONE round, in rapid
+     * alternation, and S is formed WITHIN the round. A load excursion during a
+     * round hits all four arms and divides out of the ratio; only an excursion
+     * that lands on one arm and not the others survives, and rotating the
+     * starting kernel each round makes that unbiased rather than systematic.
+     *
+     * What is reported is therefore a paired comparison: the per-round
+     * difference S(vnni) - S(avx2), its median, and a two-sided sign test over
+     * the rounds. That answers "does VNNI raise S" on a noisy host, which
+     * best-of-five per kernel could not. */
+    enum { ROUNDS = 31 };
+    double s_avx2[ROUNDS], s_vnni[ROUNDS];
+    double sum[4] = {0};
+
+    for (int r0 = 0; r0 < ROUNDS; ++r0) {
+        double g[4];
+        for (int q = 0; q < 4; ++q) {
+            /* Rotate which kernel goes first. With a fixed order a monotonic
+             * drift inside a round would always favour the same arm. */
+            const int k = (q + r0) & 3;
             long it = 0; const double t0 = now(); double el;
             do {
-                int64_t s = 0;
+                int64_t acc = 0;
                 for (size_t r = 0; r < rows; ++r) {
                     switch (k) {
-                    case 0: s += i2s_dot_avx2(Wi + r * (n / 4), a, n); break;
-                    case 1: s += i2s_dot_vnni(Wi + r * (n / 4), a, n); break;
-                    case 2: s += ternary_t5b_dot_avx2(Wb + r * ternary_t5b_size(n),
-                                                      a, n, 0); break;
-                    default: s += t5b_dot_vnni(Wb + r * ternary_t5b_size(n), a, n);
+                    case 0: acc += i2s_dot_avx2(Wi + r * (n / 4), a, n); break;
+                    case 1: acc += i2s_dot_vnni(Wi + r * (n / 4), a, n); break;
+                    case 2: acc += ternary_t5b_dot_avx2(Wb + r * ternary_t5b_size(n),
+                                                        a, n, 0); break;
+                    default: acc += t5b_dot_vnni(Wb + r * ternary_t5b_size(n), a, n);
                     }
                 }
-                sink += s; ++it; el = now() - t0;
-            } while (el < 0.30);
-            const double g = macs * it / el / 1e9;
-            if (g > best) best = g;
+                sink += acc; ++it; el = now() - t0;
+            } while (el < 0.05);          /* short slices: many, close together */
+            g[k] = macs * it / el / 1e9;
         }
-        rate[k] = best;
+        s_avx2[r0] = g[0] / g[2];
+        s_vnni[r0] = g[1] / g[3];
+        for (int k = 0; k < 4; ++k) sum[k] += g[k];
     }
+
+    for (int k = 0; k < 4; ++k) rate[k] = sum[k] / ROUNDS;
+
+    /* Median and sign test over the paired rounds. */
+    double da[ROUNDS], dv[ROUNDS], dd[ROUNDS];
+    int wins = 0;
+    for (int i = 0; i < ROUNDS; ++i) {
+        da[i] = s_avx2[i]; dv[i] = s_vnni[i];
+        dd[i] = s_vnni[i] - s_avx2[i];
+        if (dd[i] > 0) ++wins;
+    }
+    #define SORT(v) do { for (int a2 = 0; a2 < ROUNDS; ++a2) \
+        for (int b2 = a2 + 1; b2 < ROUNDS; ++b2) \
+            if (v[b2] < v[a2]) { double t = v[a2]; v[a2] = v[b2]; v[b2] = t; } } while (0)
+    SORT(da); SORT(dv); SORT(dd);
+    #undef SORT
+    const double med_a = da[ROUNDS / 2], med_v = dv[ROUNDS / 2], med_d = dd[ROUNDS / 2];
+
+    /* Exact two-sided sign test at p = 1/2, computed rather than looked up.
+     *
+     * TWO-SIDED MEANS THE SMALLER TAIL, DOUBLED. Summing the upper tail from
+     * `wins` and doubling it is only right when wins exceeds n/2; with 4 wins
+     * of 31 -- an extreme result in the other direction -- that formula gave
+     * p = 1.0 and reported the strongest possible evidence as no evidence.
+     * Caught by running the emulation build, where the "VNNI" arm is by
+     * construction the slower one and the count therefore lands low. */
+    const int lo = (wins < ROUNDS - wins) ? wins : ROUNDS - wins;
+    double tail = 0.0, total = 0.0, cf = 1.0;
+    for (int i = 0; i <= ROUNDS; ++i) {
+        total += cf;
+        if (i <= lo) tail += cf;
+        cf = cf * (ROUNDS - i) / (i + 1);
+    }
+    double p = 2.0 * tail / total;
+    if (p > 1.0) p = 1.0;
 
     printf("  kernel        GMAC/s/core    vs its AVX2 form\n");
     for (int k = 0; k < 4; ++k) {
@@ -412,13 +475,20 @@ int main(int argc, char **argv)
         else
             printf("  %-12s %10.2f           --\n", name[k], rate[k]);
     }
-    printf("\n  S (i2_s / t5b) on AVX2 : %6.3f\n", rate[0] / rate[2]);
-    printf("  S (i2_s / t5b) on VNNI : %6.3f\n", rate[1] / rate[3]);
+    printf("\n  PAIRED over %d interleaved rounds, S formed within each round:\n", ROUNDS);
+    printf("    median S on AVX2        %6.3f\n", med_a);
+    printf("    median S on VNNI        %6.3f\n", med_v);
+    printf("    median difference       %+6.3f   (%+.1f%%)\n",
+           med_d, 100.0 * med_d / med_a);
+    printf("    rounds with S(vnni) > S(avx2)   %d of %d,  sign test p = %.4f\n",
+           wins, ROUNDS, p);
     printf("\n"
            "  The paper predicts S RISES under VNNI: the baseline spends 4 of its\n"
            "  17 vector operations in the contraction VPDPBUSD collapses, the\n"
            "  packed kernel 5 of 42, so the instruction helps the baseline more.\n"
-           "  If the VNNI S is the larger number, that prediction holds here.\n");
+           "  A positive median difference with a small p supports that; the\n"
+           "  pairing is what makes it readable on a loaded machine, because both\n"
+           "  arms of every ratio were measured within the same round.\n");
 
     fprintf(stderr, "sink=%lld\n", (long long)sink);
     free(w); free(a); free(Wi); free(Wb);

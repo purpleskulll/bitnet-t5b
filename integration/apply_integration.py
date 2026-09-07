@@ -343,7 +343,8 @@ T5B_CPU_PATCHES = [
                                              row_size/ggml_type_size(vec_dot_type),
                                              (char *)dst->data + i12*nb2 + i13*nb3,
                                              nb1/ggml_type_size(dst->type),
-                                             i2s_act_scales, i2s_act_sums, *scale))""",
+                                             i2s_act_scales, i2s_act_sums, *scale))
+                        goto UseGgmlGemm2;""",
 
         """                    // t5b is handed the REAL byte stride as lda, and
                     // bitnet_t5b_sgemm re-derives it from k and aborts if the
@@ -361,6 +362,14 @@ T5B_CPU_PATCHES = [
                     // Overhead measured by bench_probe_cost.c at ~19 ns per
                     // probe, flat in thread count, against the 94.8 us a
                     // single matmul call takes.
+                    //
+                    // BRACES ARE REQUIRED. The two enclosing `for` loops carry
+                    // none upstream, so their body is ONE statement; three
+                    // statements without a block leaves i12 and i13 out of
+                    // scope and ggml-cpu.c does not compile. Caught by actually
+                    // building llama.cpp, which nothing here did until the
+                    // in-situ measurement needed a binary.
+                    {
                     const uint64_t sg_probe_t0 = bitnet_probe_tsc();
                     const bool     sg_ok = (sg_is_t5b
                           ? llamafile_sgemm_t5b(params,
@@ -382,7 +391,9 @@ T5B_CPU_PATCHES = [
                                              nb1/ggml_type_size(dst->type),
                                              i2s_act_scales, i2s_act_sums, *scale));
                     bitnet_sgemm_cycles_add(sg_is_t5b ? 1 : 0, sg_probe_t0);
-                    if (!sg_ok)""",
+                    if (!sg_ok)
+                        goto UseGgmlGemm2;
+                    }""",
     ),
     (
         "gemv/gemm fast path entry",

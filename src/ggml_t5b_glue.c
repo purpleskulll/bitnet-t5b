@@ -121,10 +121,20 @@ uint64_t bitnet_t5b_cycles_total(void)
  * double-counted: they are different counters answering different questions. */
 static struct t5b_counter g_sgemm_cycles[2][T5B_MAX_THREADS];
 
+static void t5b_register_report(void);   /* defined below */
+
 uint64_t bitnet_probe_tsc(void) { return t5b_rdtsc(); }
 
 void bitnet_sgemm_cycles_add(int is_t5b, uint64_t t0)
 {
+    /* Register the report HERE and not only from the t5b entry points. The
+     * whole purpose of this counter is that it measures the CONTROL arm too,
+     * and on an i2_s run no t5b entry point is ever reached -- so the atexit
+     * hook was never installed, the cycles were accumulated correctly, and
+     * nothing printed them. A counter whose output depends on the arm it is
+     * comparing is not a symmetric counter. Found by running llama-bench on
+     * the i2_s model and seeing no line. */
+    t5b_register_report();
     __atomic_fetch_add(&g_sgemm_cycles[is_t5b ? 1 : 0][t5b_my_slot()].v,
                        t5b_rdtsc() - t0, __ATOMIC_RELAXED);
 }

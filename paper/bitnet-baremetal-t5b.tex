@@ -733,12 +733,42 @@ measurement --- but the shared counter's cost \emph{grew along the thread axis
 this section compares on}, and a systematic error tracking the independent
 variable is worth removing at any size.
 
-\textbf{What this does not yet produce is a number.} Running it requires
-rebuilding the patched \code{llama.cpp} image, which needs a Docker daemon this
-host does not grant. The instrumentation is in the shipped patch and in the
-integration script, and their three-way consistency is gated; the measurement it
-enables is not claimed here, and the \num{1.606} above stands as the derived
-quantity it is.
+\textbf{And it has now been run.} The measurement needed a patched
+\code{llama.cpp}, which had meant a container this host does not grant; building
+it natively instead --- \code{cmake} and \code{gcc}, no daemon, no privileges
+--- removed that obstacle. \code{insitu\_measure.sh} interleaves the two
+arms one repetition at a time rather than running them as two blocks, so a load
+excursion reaches both at comparable rates, and forms the ratio within each
+round.
+
+Nine interleaved rounds at four threads, host load 3--5:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+ & derived (\S\ref{sec:endtoend}, earlier) & measured \\
+\midrule
+\code{i2\_s} matmul, ms/token & \num{21.18} & \num{21.67} \\
+t5b matmul, ms/token          & \num{16.70} & \num{16.88} \\
+ratio                          & \num{1.268} & \textbf{\num{1.257}} (median) \\
+rounds with \code{i2\_s} slower & ---        & 9 of 9 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The derived figures survive.} The difference method was the right thing
+to object to and it gave the right answer: \SI{2.3}{\percent} on the
+\code{i2\_s} time, \SI{1.1}{\percent} on t5b, \SI{0.9}{\percent} on the ratio,
+with the direct measurement never once favouring the other arm across nine
+rounds. What the objection bought is not a corrected number but a number that no
+longer rests on the assumption that everything outside the matmuls costs the
+same in both arms.
+
+Two things this still does not settle. It does not decompose the
+\code{i2\_s} path into dispatch, accumulator fold and per-column
+post-processing --- one probe at one site yields one number, and separating the
+three would need probes inside \code{tinyBLAS\_I2S\_AVX}. And it is one host:
+the same shared machine as everything else in \S\ref{sec:results}.
 
 \paragraph{Prompt length.} $1.106$, $1.152$, $1.180$, $1.113$ at 64, 256, 1024
 and 2048 tokens: the advantage does not decay with length. We had predicted
@@ -1128,9 +1158,17 @@ targets; the measured \num{2.22} sits between them. Given that the model's
 negative control failed and its VNNI loops had never been executed, agreement to
 this degree is more than was claimed for it.
 
-\textbf{What remains open is a clean machine, not the question.} Two vCPUs, no
-pinning, shared tenancy. A dedicated part would turn six-of-eight into a
-separation or refute it, and nothing here forecloses either. The claim this
+\textbf{What remains open is a clean machine --- or a better design, which is
+what was done instead.} Six of eight is a majority because the eight runs timed
+the four kernels in sequence, so the AVX2 and VNNI arms of each ratio came from
+different moments on a drifting host. \code{bench\_vnni.c} now interleaves them:
+31 rounds, all four kernels measured in rapid alternation within each round with
+the starting kernel rotated, $S$ formed inside the round, and the result
+reported as a median difference with an exact two-sided sign test. A load
+excursion then reaches both arms of every ratio instead of landing on one block.
+That converts a between-condition comparison on a noisy host into a paired one,
+which is the design a shared machine can actually answer; the numbers above
+predate it and a dedicated part is no longer the only way to sharpen them. The claim this
 subsection supports is narrow: on real VNNI hardware the packed format's
 arithmetic disadvantage grows by roughly a tenth, in the direction and for the
 reason \S\ref{sec:microarch} predicted, which is a smaller penalty than the

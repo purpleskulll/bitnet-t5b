@@ -672,12 +672,36 @@ measurement --- but the shared counter's cost *grew along the thread axis
 this section compares on*, and a systematic error tracking the independent
 variable is worth removing at any size.
 
-**What this does not yet produce is a number.** Running it requires
-rebuilding the patched `llama.cpp` image, which needs a Docker daemon this
-host does not grant. The instrumentation is in the shipped patch and in the
-integration script, and their three-way consistency is gated; the measurement it
-enables is not claimed here, and the 1.606 above stands as the derived
-quantity it is.
+**And it has now been run.** The measurement needed a patched
+`llama.cpp`, which had meant a container this host does not grant; building
+it natively instead --- `cmake` and `gcc`, no daemon, no privileges
+--- removed that obstacle. `insitu_measure.sh` interleaves the two
+arms one repetition at a time rather than running them as two blocks, so a load
+excursion reaches both at comparable rates, and forms the ratio within each
+round.
+
+Nine interleaved rounds at four threads, host load 3--5:
+
+|  | derived (§7.4, earlier) | measured |
+|---|---|---|
+| `i2_s` matmul, ms/token | 21.18 | 21.67 |
+| t5b matmul, ms/token | 16.70 | 16.88 |
+| ratio | 1.268 | **1.257** (median) |
+| rounds with `i2_s` slower | --- | 9 of 9 |
+
+**The derived figures survive.** The difference method was the right thing
+to object to and it gave the right answer: 2.3% on the
+`i2_s` time, 1.1% on t5b, 0.9% on the ratio,
+with the direct measurement never once favouring the other arm across nine
+rounds. What the objection bought is not a corrected number but a number that no
+longer rests on the assumption that everything outside the matmuls costs the
+same in both arms.
+
+Two things this still does not settle. It does not decompose the
+`i2_s` path into dispatch, accumulator fold and per-column
+post-processing --- one probe at one site yields one number, and separating the
+three would need probes inside `tinyBLAS_I2S_AVX`. And it is one host:
+the same shared machine as everything else in §7.
 
 **Prompt length.**  $1.106$, $1.152$, $1.180$, $1.113$ at 64, 256, 1024
 and 2048 tokens: the advantage does not decay with length. We had predicted
@@ -1041,9 +1065,17 @@ targets; the measured 2.22 sits between them. Given that the model's
 negative control failed and its VNNI loops had never been executed, agreement to
 this degree is more than was claimed for it.
 
-**What remains open is a clean machine, not the question.** Two vCPUs, no
-pinning, shared tenancy. A dedicated part would turn six-of-eight into a
-separation or refute it, and nothing here forecloses either. The claim this
+**What remains open is a clean machine --- or a better design, which is
+what was done instead.** Six of eight is a majority because the eight runs timed
+the four kernels in sequence, so the AVX2 and VNNI arms of each ratio came from
+different moments on a drifting host. `bench_vnni.c` now interleaves them:
+31 rounds, all four kernels measured in rapid alternation within each round with
+the starting kernel rotated, $S$ formed inside the round, and the result
+reported as a median difference with an exact two-sided sign test. A load
+excursion then reaches both arms of every ratio instead of landing on one block.
+That converts a between-condition comparison on a noisy host into a paired one,
+which is the design a shared machine can actually answer; the numbers above
+predate it and a dedicated part is no longer the only way to sharpen them. The claim this
 subsection supports is narrow: on real VNNI hardware the packed format's
 arithmetic disadvantage grows by roughly a tenth, in the direction and for the
 reason §9.1 predicted, which is a smaller penalty than the
