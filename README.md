@@ -85,7 +85,7 @@ arithmetic under the same name.
 |---|---|
 | `paper/` | the paper: Markdown, LaTeX source, compiled PDF |
 | `src/` | the format, its kernels, the ggml-facing glue, the test suite |
-| `benchmarks/` | port throughput, thread scaling, one token's weight traffic, per-kernel rate, and the upstream tiled shape used as a control |
+| `benchmarks/` | port throughput, thread scaling, one token's weight traffic, per-kernel rate, the VNNI comparison, and the upstream tiled shape used as a control |
 | `tools/` | GGUF converters and analysis: to t5b, architecture retag, depth synthesis, dead-neuron census, tensor structure, the `i2_s` reference fetcher |
 | `integration/` | the `llama.cpp` change, as a unified diff **and** as the script that applies it |
 | `results/` | every evidence file the paper cites, each stating its own reproduction command |
@@ -119,6 +119,8 @@ by clone or by path — no model, no build of `llama.cpp`):
 | t5b against upstream `i2_s`, one token's weight traffic | `./build/bench_token 6 3` |
 | arithmetic surplus against core count | `./build/bench_threads 0.5` |
 | per-kernel rate, instruction and spill counts | `./build/bench_alu` |
+| the VNNI kernels compute the right answer | `./build/bench_vnni_emu` — runs anywhere, no VNNI needed |
+| VNNI against AVX2, timed | `./build/bench_vnni` — needs `avx512vnni` or `avx_vnni`; exits 3 otherwise |
 
 ## What is **not** reproducible from this repository alone, and why
 
@@ -194,10 +196,18 @@ says it is.
      *not* a result: hand-written loops that have never been executed, a metric
      that failed calibration, and a negative control that did not fire.
      Requires `llvm-mca`; the header says how to fetch it without root.
-   - `./second_datapoint.sh user@host` is the real answer and needs one machine
-     reporting `avx512vnni` or `avx_vnni`. No model, no Docker, no privileges.
-     **If you have such a machine, this is the single most useful thing you can
-     contribute to this work.**
+   - `./second_datapoint.sh user@host` runs everything on a second machine,
+     including **step 5, which is the VNNI measurement itself**. That step is
+     new and it exists because the earlier claim was wrong: this script used to
+     say a run on a VNNI part would settle the question, and a reviewer showed
+     with `objdump` that its binaries contained zero `vpdpbusd`. No compiler
+     turns `vpmaddubsw`+`vpaddw` into that instruction. `benchmarks/bench_vnni.c`
+     writes it, verifies at run time that its own binary contains it, checks
+     every row against exact arithmetic before printing a rate, and exits 3
+     rather than run on a CPU without the feature.
+     **If you have a machine reporting `avx512vnni` or `avx_vnni`, this is the
+     single most useful thing you can contribute to this work.** No model, no
+     Docker, no privileges.
 
 2. **One model size.** No public ternary checkpoint above 2 B exists.
 3. **A shared, noisy host.** Run-to-run spread is comparable to the effect,

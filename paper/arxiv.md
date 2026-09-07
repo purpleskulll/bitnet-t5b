@@ -33,10 +33,12 @@ abstract: |
   identically zero, that the dead index sets of the gate and up projections
   coincide in all thirty layers, and that an independent fine-tune revives none
   of them.
-  All results are obtained on a single AVX2 microarchitecture without VNNI; we
-  argue explicitly why VNNI is expected to narrow or invert the advantage, and
-  note that an independent system targeting VNNI stores ternary weights at
-  eight bits for that reason.
+  All results are obtained on a single AVX2 microarchitecture without VNNI. A
+  static pipeline model, calibrated against that host to 3.0%, finds the
+  arithmetic ratio stable across Zen 3/4/5, Ice Lake and Sapphire Rapids, so it
+  is not an artefact of one narrow part; the same model bounds the cost of VNNI
+  at 0-14% but cannot measure it, and we note that an independent system
+  targeting VNNI stores ternary weights at eight bits for that reason.
 ---
 
 # 1. Introduction
@@ -526,6 +528,25 @@ four magic-division identities over their whole legal input range, deliberate
 32-bit accumulator wraparound driven 4.96 times past $2^{31}$, the extreme
 activations $\pm 127$, and every block and tail boundary.
 
+**How much that assertion count is worth.** An assertion count measures effort,
+not power, so the suite's power is measured directly by mutation
+(`scripts/mutation_test.sh`): fourteen defects are injected one at a time into
+the kernel and its header — each magic multiplier perturbed, the digit
+multiplication changed from $3y$ to $5y$, the odd-byte view shifted by seven
+instead of eight, the low-byte mask narrowed, two digit planes given each
+other's activations, the radix changed, the digit count reduced, and the
+accumulator fold raised from 12 to 13 and to upstream's 32. **Twelve are killed.**
+
+The remaining two survive, and checking rather than filing them is what makes
+the result meaningful: both are *exactly equivalent* on every reachable input,
+proved exhaustively rather than argued. Replacing the magic multiplier 811 by
+810 leaves $\lfloor x/81 \rfloor$ unchanged on all 256 byte values; replacing the
+byte-wise digit subtraction by a word-wise one changes nothing on any of the
+$65{,}536$ word lanes, because no low byte ever borrows — which is the invariant
+§4.1 asserts, here confirmed independently of the text that asserts it. The
+script carries both proofs and fails if either mutant is ever *killed*, since
+that would mean the kernel had lost the property the proof rests on.
+
 **Model level, argmax.** Nine prompts across two models, greedy decoding, one
 binary, one seed, one variable: identical output by `diff`. A negative control
 confirms the comparison can fail — two different prompts compare unequal.
@@ -550,11 +571,24 @@ away.
 identity (5) holds model-wide. Previously this had been verified on one tensor.
 
 **A defect in the baseline.** With activations uniformly at $\pm 127$,
-`llama.cpp`'s `i2_s` AVX2 kernel disagrees with exact arithmetic on 200 of 200
-cases on two of seven tensors, every discrepancy a multiple of $2^{16}$ — the
-16-bit accumulator overflow that (13) forbids by construction in our kernel.
+`llama.cpp`'s `i2_s` AVX2 kernel disagrees with exact arithmetic on **11,998 of
+12,000** rows at $K = 6912$, every discrepancy a multiple of $2^{16}$ — the
+16-bit accumulator overflow that (13) forbids by construction in our kernel. The
+prediction that overflow requires $n_b = K/128 \ge 32$, i.e. $K \ge 4096$, is
+confirmed on both sides: **0 of 108,000** rows at $K = 2560$ wrap, under the same
+activations.
+
+The two exceptions are the bound speaking rather than noise, and they matter for
+how the claim is phrased. The margin is $256 \times 127 = 32{,}512$ against
+$32{,}767$, or $0.78\%$; whether a given row overflows therefore turns on its own
+code mean, and a row slightly below average clears the ceiling. An earlier draft
+measured 200 of 200 on two tensors and stated the prediction as an absolute. At
+12,000 rows the tail is visible and the correct statement is statistical:
+direction and magnitude hold exactly, "must" does not.
+
 Whether ordinary activations reach that state is not established here; the
-mechanism is.
+mechanism is. On random `int8` the baseline is exact on all 42,000 rows tried,
+which is why the two kernels agree wherever it matters.
 
 ## 7.2 Kernel microbenchmark
 
@@ -661,13 +695,21 @@ it; only transport and arithmetic are real.
 ## 7.4a Two ratios a reader will ask about immediately
 
 **Why 25% fewer weight bytes give 14% more throughput.** At \SI{21.9}{}~tokens
-per second a token takes \SI{45.7}{\milli\second}, and the replay of §7.3 puts a
-token's `i2_s` matmuls at about \SI{14}{\milli\second}. Weight streaming is
-therefore roughly **30% of a token**; the remaining 70% is attention, the KV
+per second a token takes \SI{45.7}{\milli\second}, of which the weight matmuls
+are **43.6%** — \SI{19.9}{\milli\second}. That figure is measured in situ by the
+cycle counter of §7.4, not inferred: the remaining 56.4% is attention, the KV
 cache, RoPE, the norms, the activation quantisation, thread barriers and graph
-overhead, all identical between the arms. Read as bandwidth, the generation loop
-uses \SI{11.4}{\giga\byte\per\second} of the \SI{38.9}{} this machine
-delivers: it is not at the memory wall.
+overhead, all identical between the arms, so a 25% cut in weight bytes acts on
+under half the token and 14% is the expected order.
+
+The standalone replay of §7.3 puts the same matmuls at about
+\SI{14}{\milli\second}, or 30%, and an earlier draft quoted that number here.
+The gap is the replay's, not the model's: it drives
+`bitnet_vec_dot_i2_i8_s_reference`, which §7.4 measures at $1.6\times$ the speed
+of the path `llama.cpp` actually dispatches. The replay is a lower bound on what
+the matmuls cost and was read as an estimate of it. Read as bandwidth, the
+generation loop uses \SI{11.4}{\giga\byte\per\second} of the \SI{38.9}{} this
+machine delivers: it is not at the memory wall either way.
 
 **Why the file shrinks by only 9%.** The ternary tensors are 521.0 MB of a
 1187.8 MB file. One f16 tensor — the 128k-vocabulary embedding — is 656.7 MB,
@@ -768,56 +810,72 @@ removed these neurons occurred in pre-training and was untouched downstream,
 which makes any scheme exploiting them a property of the base rather than of one
 checkpoint.
 
-Skipping the rows saves 2.4380% of weight bytes *and* the same share of
-multiply-accumulates, since a skipped row is neither read nor computed. Removing
-the neurons outright would save 3.64% — a dead neuron also renders its
-$W_{\text{down}}$ column useless, $9{,}870 \times 7{,}680$ weights — at zero cost to the element-wise product, but not
-provably zero cost to the layer: BitNet b1.58 places a sub-layer RMS norm
-(`ffn_sub_norm`) between the product and $W_{\text{down}}$, and an RMS norm
-divides by the root mean over all $6912$ entries. Deleting zeros changes that
-denominator. Skipping the rows in the kernel is exact; removing them is exact
-only if the norm's divisor is pinned to the original width. **Skipping is exact; removing is not, and the difference matters.** Because the
-dead index sets coincide, $h_i = \sigma(\text{gate}_i)\,\text{up}_i = \sigma(0)\cdot 0 = 0$
-for any activation $\sigma$, so a kernel that skips the row and emits the value
-the shift identity requires is *unconditionally* exact.
+Skipping the rows in the kernel saves 2.4380% of weight bytes and the same share
+of multiply–accumulates, and is unconditionally exact. Removing the neurons
+outright was also attempted, and the outcome is a negative result worth stating
+because three prior claims about it — two by us — were wrong.
 
-Deleting the neurons is a different operation and is **not** exact as it stands.
-BitNet places a sub-layer RMS norm (`ffn_sub_norm`) between the element-wise
-product and $W_{\text{down}}$, normalising over all $K=6912$ entries. Removing
-$d$ entries that are identically zero leaves the sum of squares unchanged while
-reducing the count, so the norm's output scales by
-$$
-\sqrt{\frac{K-d}{K}} ,
-$$
-which in layer 1, with $d/K = 0.4359$, is $0.751$ — a 25% change to that layer's
-entire feed-forward output. Removal is exact only with the divisor pinned to the
-original width.
+It is expressible: `llama.cpp` reads `LLM_KV_FEED_FORWARD_LENGTH` through
+`get_key_or_arr` into a per-layer array, so the container and the
+hyper-parameters carry per-layer widths. It is *not* free of loader changes:
+`src/models/bitnet.cpp` allocates its four feed-forward tensors with the global
+`n_ff`, so a file whose layers differ in width fails at load. Four lines change
+that, and with a scalar `feed_forward_length` the broadcast makes them a no-op
+for every existing checkpoint.
 
-Two earlier claims in this work were both wrong about the second obstacle. It
-first said the removal is *blocked by the file format*: false — `llama.cpp`
-reads `LLM_KV_FEED_FORWARD_LENGTH` through `get_key_or_arr` into a per-layer
-array (`llama-model.cpp`, `llama-hparams.h`), so the container and the
-hyper-parameters both express per-layer widths. It then said the removal needs
-*no loader change*: also false — `src/models/bitnet.cpp` allocates
-$W_{\text{gate}}$, $W_{\text{up}}$, $W_{\text{down}}$ and `ffn_sub_norm` with
-the global `n_ff`, not `hparams.n_ff(i)`; only architectures such as `deci`,
-`openelm` and `gemma4` take the per-layer path. The truth is between them: the
-format and the hyper-parameters can express it, the BitNet loader does not use
-it, and four lines would change that. Neither the loader change nor the pinned
-divisor is implemented here.
+With those four lines the pruned model loads — 2.35 B parameters against 2.41 B,
+1.08 GiB against 1.10, 60,948,480 ternary weights and 15,268,736 bytes removed.
+Every surviving weight is bit-identical and every attention tensor is
+byte-identical; the feed-forward block's int8 input is unchanged value for value
+across all 1,642,496 of them. But it is **not** exact at the token level, and
+the reason is the sub-layer RMS norm BitNet places between the element-wise
+product and $W_{\text{down}}$. That norm divides by the root mean over all 6,912
+entries, so deleting $d$ of them rescales the output by
+
+$$
+\sqrt{\frac{K-d}{K}},
+$$
+
+which in layer 1, where $d/K = 43.59\%$, is $0.751$ and not a rounding matter.
+Pinning the divisor to the original width restores it to $2.5$ ulp of float32 —
+not to zero. On three prompts the output is identical on one and diverges on two
+— late, inside repetitive passages where successive candidates are near-ties and
+the last bits decide. And it buys nothing measurable:
+`pp512` $119.24 \pm 3.11 \to 109.90 \pm 9.48$, `tg128` $23.49 \pm 0.51 \to
+23.53 \pm 0.72$.
+
+The honest summary is that 2.9% of the ternary payload can be removed, that
+doing so costs four lines and changes the output, and that it makes the model no
+faster. We do not ship it.
 
 ---
 
 # 9. Limitations
 
-**The port analysis is Zen 2 specific before VNNI even enters.** §5.2 measures
-one multiply-class port at 1.05 instructions per cycle against 3.0–4.0 for the
-cheap classes. A reviewer ran the same benchmark on an Intel part with AVX-512
-and obtained 1.60 against 3.09: two 256-bit multiplier ports rather than one.
-The ratio that inequality~(18) turns on is therefore a property of the
+**The port analysis is Zen 2 specific — but $S$ is not.** §5.2 measures one
+multiply-class port at 1.05 instructions per cycle against 3.0–4.0 for the cheap
+classes. A reviewer ran the same benchmark on an Intel part with AVX-512 and
+obtained 1.60 against 3.09: two 256-bit multiplier ports rather than one. The
+ratio that inequality~(18) turns on is therefore a property of the
 microarchitecture at a finer grain than the instruction set, and §5.3's surplus
 table would have to be re-measured on any other part before (18) could be
 applied to it.
+
+The worry this raises is sharper than the port count alone, and it is worth
+stating in its strongest form. Zen 2 cracks every 256-bit integer vector
+operation into two 128-bit micro-operations issued over four floating-point
+pipes, retiring roughly two vector operations per cycle; Zen 3 and later, and
+Ice Lake and later, execute 256 bits natively. The packed kernel spends
+$42/160 = 0.2625$ vector operations per weight against the baseline's
+$17/128 = 0.1328$ — it is the kernel that issues *more* of them. A machine that
+doubles the vector-op ceiling therefore relieves the packed format
+preferentially, $S$ could collapse, and the entire motivation for a roofline
+condition would be an artefact of one narrow part.
+
+It does not collapse. §9.1 measures this against a calibrated static model: $S$
+lands between 2.10 and 2.45 on Zen 3/4/5, Ice Lake and Sapphire Rapids, against
+2.50 on Zen 2. Both kernels get roughly a third faster and the *ratio* stays
+put.
 
 **One microarchitecture, and the decisive property is absent from it.** All
 results are from a single Zen 2 part reporting `avx2` and `fma` and nothing
@@ -825,9 +883,133 @@ else. `VPDPBUSD` collapses the contraction of §4.2 into one instruction while
 leaving the decode of §4.1 unchanged; by (15) this raises $S$ and lowers
 $\Sigma$, moving (18) against a packed format. The *Litespark* system, targeting
 VNNI and ARM `SDOT`, stores ternary weights at eight bits for precisely this
-reason. **The central result should be read as a property of AVX2 without VNNI
-until it is run on a VNNI part.** The code compiles for `-mavxvnni` here; it
-cannot execute, and no such measurement is claimed.
+reason. §9.1 *bounds* the size of that move at 0–14 % but does not measure it.
+**The central result should be read as a property of AVX2 without VNNI until it
+is run on a VNNI part.** The code compiles for `-mavxvnni` here; it cannot
+execute, and no such measurement is claimed.
+
+## 9.1 How far the model can substitute for the hardware
+
+The two objections above differ in one respect that matters: the first concerns
+code that exists and can be analysed, the second concerns code that does not.
+We separate them.
+
+`llvm-mca`, LLVM's static pipeline simulator, is run over the inner loops that
+`gcc -O3 -mavx2 -mfma` actually emits for `ternary_t5b_dot_avx2` and
+`bitnet_vec_dot_i2_i8_s_reference`, against the vendor-derived scheduler models
+for six targets. Re-deriving the loop shapes reproduces the counts of §7.2
+exactly for the baseline — 21 instructions, 4 multiply-class, 128 weights — and
+to within one instruction for the packed kernel (46 against 47; the multiply
+count of 13 and the 160 weights are exact), the difference being a compiler
+version.
+
+**The model is calibrated before it is used.** Its Zen 2 prediction is
+$S = 2.501$ against the $S = 81.93/33.74 = 2.428$ that §7.2 measured on this
+host: an error of $3.0\%$. `scripts/microarch_model.sh` exits non-zero if that
+ever drifts past $8\%$. The absolute cycle counts are uniformly optimistic by
+$6$–$11\%$ — 18.01 predicted against 19.7 measured per 160-weight block — which
+is why only the ratio is carried forward.
+
+| target | packed, cyc/block | baseline, cyc/block | $S$ |
+|---|---:|---:|---:|
+| `znver2` (this host) | 18.01 | 5.76 | 2.501 |
+| `znver3` | 11.51 | 3.76 | 2.449 |
+| `znver4` | 11.51 | 3.76 | 2.449 |
+| `znver5` | 11.51 | 3.76 | 2.449 |
+| `icelake-server` | 14.02 | 5.34 | 2.098 |
+| `sapphirerapids` | 14.52 | 5.01 | 2.317 |
+
+Two readings of this table would overstate it. `znver3`, `znver4` and `znver5`
+return *identical* cycle counts, so they are one prediction and not three:
+LLVM's models for those three agree on this instruction mix, and the table
+contains four distinct predictions, not six. And every newer target sits at or
+below the Zen 2 value rather than scattered around it — the ratio improves by up
+to 16% on a wider machine and never degrades — so the claim supported here is
+one-sided (*$S$ does not run away*) and not a claim that $S$ is constant.
+
+For the VNNI question the same apparatus is far weaker, and we set out why
+rather than reporting the number alone. No compiler here targets VNNI usefully,
+so the two VNNI loops are written by hand: in both kernels the contraction ends
+in a `vpmaddubsw` followed by an accumulating `vpaddw`, and `VPDPBUSD` performs
+exactly that pair fused, with the same unsigned-times-signed operand
+convention. The substitution is argued sound — the reduction width changes from
+`int16` pairs to `int32` quadruples, which leaves the horizontal sum invariant,
+and it makes the accumulator fold of §4.2 unnecessary — but it is an argument,
+not a test. **These loops have never been executed.**
+
+Three further caveats bound what the resulting numbers mean.
+
+1. `VPDPBUSD` accumulates in place with latency 10–13, so a loop carrying one
+   accumulator per contraction is bound by that latency until it is unrolled.
+   On `sapphirerapids` this makes the hand-written VNNI baseline *slower* than
+   the AVX2 one it replaces — 7.01 cycles against 5.01 — which is a property of
+   the accumulator count, not of VNNI. The VNNI comparison is therefore read at
+   the resource bound, where an adequately unrolled implementation lands.
+2. That metric fails the calibration the dependency-bound metric passed: on Zen
+   2 it gives $S = 1.96$ against the measured 2.428, an error of $-19\%$,
+   because the real loop is dependency-bound. Both are reported.
+3. The negative control did not fire. `llvm-mca` 23.1.0 assembles and times
+   `VPDPBUSD` for `-mcpu=znver2`, a part without the instruction, and continues
+   to do so under `-mattr=-avx512vnni,-avxvnni`, assigning it latency 11 and
+   throughput 1.00. The tool therefore cannot distinguish a legal VNNI sequence
+   from an illegal one and offers no check on this subsection beyond timing.
+   The control is kept in place and reported failing.
+
+Subject to all three, VNNI moves $S$ in the predicted direction — against the
+packed format, because the baseline spends 4 of 17 operations in the contraction
+that `VPDPBUSD` collapses where the packed kernel spends 5 of 42 — and moves it
+by $0$ to $14\%$: $S$ reaches 2.08 on `znver4` and 2.51 on `icelake-server` and
+`sapphirerapids`. Modest, not decisive.
+
+**None of this is a measurement**, and for some time we claimed a measurement
+was one command away when it was not. `scripts/second_datapoint.sh` carried a
+header saying a run on a VNNI part would settle the question. A reviewer ran it
+on an Intel Xeon reporting `avx512_vnni`, then checked the binaries with
+`objdump`: **zero `vpdpbusd`**, with `-march=native` in the flags. No compiler
+contracts `vpmaddubsw` followed by an accumulating `vpaddw` into `VPDPBUSD` as
+an idiom — the instruction must be written, and it had not been. Every run of
+that script measured the AVX2 kernels on whatever microarchitecture it was given.
+`src_modifications/bench/bench_vnni.c` now writes the instruction: `i2_s` and
+t5b in both forms, the VNNI pair contracting into `int32` accumulators, which
+for t5b also removes the fold of §4.2 entirely. It verifies with `objdump` at
+run time that its own binary contains the instruction, checks every row against
+exact `int64` arithmetic before printing a rate, and exits 3 rather than run on
+a CPU without the feature. A second build models `VPDPBUSD` in AVX2 so the
+algorithm can be checked where the instruction cannot execute; it passes on all
+100 rows for all four kernels and deliberately prints no timings.
+
+### A second microarchitecture, measured
+
+A reviewer ran the benchmarks on an Intel Xeon (AVX-512 capable, 2 vCPU cloud
+sandbox), and the result is a genuine second data point for everything except
+VNNI. Their caveats are adopted here rather than paraphrased: with two vCPUs and
+no pinning, only the one- and two-thread rows carry information, and the
+four-thread `bench_token` row and every `bench_threads` row from $T=3$ are
+oversubscribed and mean nothing.
+
+| | this host (Zen 2) | reviewer (Intel Xeon) |
+|---|---:|---:|
+| multiply class, ops/cycle | 1.05 | 1.32–1.44 |
+| cheap class, ops/cycle | 3.0–4.0 | 2.97–3.04 |
+| `i2_s` reference, GMAC/s/core | 81.93 | 49.86 |
+| t5b, GMAC/s/core | 33.74 | 23.61 |
+| **$S$** | **2.43** | **2.11** |
+| $\Sigma$ at 1 thread | 1.35 | 1.65 |
+| $\Sigma$ at 2 threads | 1.63 | 2.23 |
+
+Two readings, and the second is the load-bearing one. First, $S$ does not
+collapse on a wider machine: 2.11 against 2.43, two runs within 1% of each other.
+Second, **this is an out-of-sample test of §9.1's model, and it passes.** That
+model predicted $S = 2.098$ for `icelake-server` and 2.317 for
+`sapphirerapids` — bracketing the measured 2.11 — from a calibration performed
+only against this Zen 2 host. A static pipeline model tuned on one
+microarchitecture predicted a second one it had never seen, to within 1%.
+
+At two threads the reviewer's machine gives $S = 2.11 < \Sigma = 2.23$, so (18)
+predicts a marginal win there and none at one thread. That is a prediction, not
+a result: no end-to-end run was made on that host, and the elevated $\Sigma$
+comes from the VM's low per-core DRAM bandwidth (\SI{8.1}{\giga\byte\per\second}
+single-threaded) rather than from the microarchitecture.
 
 **One model size, and one architecture family.** No public ternary checkpoint
 larger than 2 B exists. The synthetic 60-layer graph of §7.4 doubles the weight
@@ -840,9 +1022,20 @@ available, and four further runs at ordinary load include one the denser format
 loses. The headline is therefore the five-invocation replication of §7.4.
 
 **Verification scope.** The round trip is exact on all 210 tensors and all
-2,084,044,800 weights; what is limited to seven tensors is the dot-product
-comparison and the read-back from disk. Nine prompts and 20,480 perplexity
+2,084,044,800 weights, and so — since this revision — is the dot-product
+comparison: 126,000 row-and-activation cases across every `i2_s` tensor, on which
+the packed kernel matches exact `int64` arithmetic without exception. What
+remains limited is the read-back from disk, which covers the 210 plus the
+embedding rather than all 332 tensors; the converter's own reread covers the
+dims, type, offset and alignment of all 332. Nine prompts and 20,480 perplexity
 tokens are a large but finite sample.
+
+Two things this does **not** establish, and they are the ones a reader should
+hold against it. Nothing here runs the converted model: that the weights survive
+repacking is not evidence that a loader reading them emits the same tokens, and
+it cannot be until a loader knows type 43. And exhaustiveness over tensors is not
+exhaustiveness over inputs — 200 rows per tensor under three activation patterns
+is a large sample of a space that is not finite.
 
 **Task benchmarks.** None, and for the format question none is possible: the
 output is bit-identical, so every metric is identical by construction. Where
@@ -879,12 +1072,18 @@ sides of that comparison are measurable in minutes. On the part measured here
 the condition holds from four cores upward, and the deployed model is 9% smaller
 and 13–14% faster with bit-identical output.
 
-The same inequality predicts that the result will narrow on a part with VNNI,
-and an independent system built for such parts chose the opposite extreme of the
-same trade-off. That is not a caveat appended to a positive result; it is the
-result, which is that the choice of weight density is a hardware-dependent
-optimisation with a computable decision rule, rather than a property of the
-model.
+The same inequality predicts that the result will narrow on a part with VNNI —
+by 0 to 14% in the static model of §9.1, though that model's negative control
+failed and it is no substitute for the run — and an independent system built for
+such parts chose the opposite extreme of the same trade-off. That is not a
+caveat appended to a positive result; it is the result, which is that the choice
+of weight density is a hardware-dependent optimisation with a computable
+decision rule, rather than a property of the model. What §9.1 does settle is
+that the rule's input is not parochial: across four distinct scheduler models
+spanning two vendors and three generations, $S$ ranges from 2.10 to 2.50 and
+every newer target sits at or *below* the Zen 2 value on which it was derived,
+by at most 16%. The ratio never worsens on a wider machine, so the decision rule
+is worth applying rather than an accident of the one part that produced it.
 
 ---
 
