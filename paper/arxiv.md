@@ -33,12 +33,15 @@ abstract: |
   identically zero, that the dead index sets of the gate and up projections
   coincide in all thirty layers, and that an independent fine-tune revives none
   of them.
-  All results are obtained on a single AVX2 microarchitecture without VNNI. A
-  static pipeline model, calibrated against that host to 3.0%, finds the
-  arithmetic ratio stable across Zen 3/4/5, Ice Lake and Sapphire Rapids, so it
-  is not an artefact of one narrow part; the same model bounds the cost of VNNI
-  at 0-14% but cannot measure it, and we note that an independent system
-  targeting VNNI stores ternary weights at eight bits for that reason.
+  Our own results are obtained on a single AVX2 microarchitecture without VNNI.
+  Two independent runs bound that limitation: a static pipeline model, calibrated
+  against the host to 3.0%, finds the arithmetic ratio stable across Zen 3/4/5,
+  Ice Lake and Sapphire Rapids, and a reviewer's Intel Xeon reproduces it at 2.11
+  against our 2.43. On real VNNI hardware the same reviewer measures the ratio
+  rising by 8.8% -- the direction predicted, from the predicted mechanism, at a
+  magnitude smaller than the eight-bit storage choice of a system built for those
+  targets would suggest, though on a shared host whose spread exceeds the
+  effect.
 ---
 
 # 1. Introduction
@@ -88,8 +91,7 @@ computation, negating the performance benefit" — a decision taken for targets
 whose dot-product instruction (`VPDPBUSD`, ARM `SDOT`) consumes eight-bit
 operands.
 
-**The base-3 packing itself is not new, and an earlier draft of this paper
-claimed it was.** `llama.cpp` has carried `TQ1_0` since August 2024
+**The base-3 packing itself is not new.** `llama.cpp` has carried `TQ1_0` since August 2024
 (PR&nbsp;#8151): its block structure in `ggml-common.h` is annotated
 *"5 elements per byte (3^5 = 243 < 256)"*, it decodes without a table, and it
 has an AVX2 dot product. `TQ1_0` reaches 1.6875 bits per weight because each
@@ -560,7 +562,7 @@ activations $\pm 127$, and every block and tail boundary.
 
 **How much that assertion count is worth.** An assertion count measures effort,
 not power, so the suite's power is measured directly by mutation
-(`scripts/mutation_test.sh`): fourteen defects are injected one at a time into
+(`mutation_test.sh`): fourteen defects are injected one at a time into
 the kernel and its header — each magic multiplier perturbed, the digit
 multiplication changed from $3y$ to $5y$, the odd-byte view shifted by seven
 instead of eight, the low-byte mask narrowed, two digit planes given each
@@ -611,10 +613,9 @@ activations.
 The two exceptions are the bound speaking rather than noise, and they matter for
 how the claim is phrased. The margin is $256 \times 127 = 32{,}512$ against
 $32{,}767$, or $0.78\%$; whether a given row overflows therefore turns on its own
-code mean, and a row slightly below average clears the ceiling. An earlier draft
-measured 200 of 200 on two tensors and stated the prediction as an absolute. At
-12,000 rows the tail is visible and the correct statement is statistical:
-direction and magnitude hold exactly, "must" does not.
+code mean, and a row slightly below average clears the ceiling. At 12,000 rows
+that tail is visible, so the correct statement is statistical rather than
+absolute: direction and magnitude hold exactly, "must" does not.
 
 Whether ordinary activations reach that state is not established here; the
 mechanism is. On random `int8` the baseline is exact on all 42,000 rows tried,
@@ -705,15 +706,12 @@ candidates, and isolating them would mean instrumenting the control arm.
 now carries the fix.** It is not measured: it is derived from two `llama-bench`
 runs, taken separately on a host whose load ranged from 2 to 10 (4.905 s against
 5.479 s per repetition), so every fluctuation *between* those runs lands entirely
-in the `i2_s` matmul figure. The stated reason for instrumenting only one arm —
-that the control must stay unperturbed — does not survive scrutiny either. The
-integration therefore now probes **both** arms at the same dispatch site in the
-same expression, so the ratio is a quotient of two measured quantities and
+in the `i2_s` matmul figure. The integration therefore probes **both** arms at
+the same dispatch site in the same expression, so the ratio is a quotient of two measured quantities and
 whatever the dispatch itself costs is common to both and divides out.
 
-The probe's cost was measured rather than assumed
-(`src_modifications/bench/bench_probe_cost.c`), and the assumption would have
-been wrong in an instructive way. An `rdtsc` pair alone costs 19 ns and is flat
+The probe's cost is measured rather than assumed
+(`benchmarks/bench_probe_cost.c`). An `rdtsc` pair alone costs 19 ns and is flat
 in thread count. The same pair with an atomic add to **one shared counter** —
 which is what the original instrumentation used — costs 18.7 ns at one thread
 and 87.6 ns at six, a factor of 4.7, because every `ggml` worker issues a
@@ -765,8 +763,8 @@ overhead, all identical between the arms, so a 25% cut in weight bytes acts on
 under half the token and 14% is the expected order.
 
 The standalone replay of §7.3 puts the same matmuls at about
-\SI{14}{\milli\second}, or 30%, and an earlier draft quoted that number here.
-The gap is the replay's, not the model's: it drives
+\SI{14}{\milli\second}, or 30%. That gap is the replay's, not the model's: it
+drives
 `bitnet_vec_dot_i2_i8_s_reference`, which §7.4 measures at $1.6\times$ the speed
 of the path `llama.cpp` actually dispatches. The replay is a lower bound on what
 the matmuls cost and was read as an estimate of it. Read as bandwidth, the
@@ -947,10 +945,11 @@ else. `VPDPBUSD` collapses the contraction of §4.2 into one instruction while
 leaving the decode of §4.1 unchanged; by (15) this raises $S$ and lowers
 $\Sigma$, moving (18) against a packed format. The *Litespark* system, targeting
 VNNI and ARM `SDOT`, stores ternary weights at eight bits for precisely this
-reason. §9.1 *bounds* the size of that move at 0–14 % but does not measure it.
-**The central result should be read as a property of AVX2 without VNNI until it
-is run on a VNNI part.** The code compiles for `-mavxvnni` here; it cannot
-execute, and no such measurement is claimed.
+reason. §9.1 *bounds* the size of that move at 0–14 % from a static model; §9.2
+*measures* it at 8.8 % on hardware we do not own. **The central result is still
+ours only for AVX2 without VNNI** — every end-to-end number in §7 comes from this
+one host, and no VNNI machine has run the model. What §9.2 settles is the
+kernel-level ratio, not the deployed one.
 
 ## 9.1 How far the model can substitute for the hardware
 
@@ -969,7 +968,7 @@ version.
 
 **The model is calibrated before it is used.** Its Zen 2 prediction is
 $S = 2.501$ against the $S = 81.93/33.74 = 2.428$ that §7.2 measured on this
-host: an error of $3.0\%$. `scripts/microarch_model.sh` exits non-zero if that
+host: an error of $3.0\%$. `microarch_model.sh` exits non-zero if that
 ever drifts past $8\%$. The absolute cycle counts are uniformly optimistic by
 $6$–$11\%$ — 18.01 predicted against 19.7 measured per 160-weight block — which
 is why only the ratio is carried forward.
@@ -1034,15 +1033,12 @@ that `VPDPBUSD` collapses where the packed kernel spends 5 of 42 — and moves i
 by $0$ to $14\%$: $S$ reaches 2.08 on `znver4` and 2.51 on `icelake-server` and
 `sapphirerapids`. Modest, not decisive.
 
-**None of this is a measurement**, and for some time we claimed a measurement
-was one command away when it was not. `scripts/second_datapoint.sh` carried a
-header saying a run on a VNNI part would settle the question. A reviewer ran it
-on an Intel Xeon reporting `avx512_vnni`, then checked the binaries with
-`objdump`: **zero `vpdpbusd`**, with `-march=native` in the flags. No compiler
-contracts `vpmaddubsw` followed by an accumulating `vpaddw` into `VPDPBUSD` as
-an idiom — the instruction must be written, and it had not been. Every run of
-that script measured the AVX2 kernels on whatever microarchitecture it was given.
-`src_modifications/bench/bench_vnni.c` now writes the instruction: `i2_s` and
+**None of this is a measurement.** It also cannot become one by recompiling: no
+compiler contracts `vpmaddubsw` followed by an accumulating `vpaddw` into
+`VPDPBUSD` as an idiom, so an AVX2 kernel built with `-march=native` on a VNNI
+part contains **zero `vpdpbusd`** and measures AVX2 on that part. The
+instruction has to be written.
+`benchmarks/bench_vnni.c` now writes the instruction: `i2_s` and
 t5b in both forms, the VNNI pair contracting into `int32` accumulators, which
 for t5b also removes the fold of §4.2 entirely. It verifies with `objdump` at
 run time that its own binary contains the instruction, checks every row against
@@ -1051,17 +1047,48 @@ a CPU without the feature. A second build models `VPDPBUSD` in AVX2 so the
 algorithm can be checked where the instruction cannot execute; it passes on all
 100 rows for all four kernels and deliberately prints no timings.
 
-**What is missing is therefore hardware access, and nothing else.** That
-sentence would have been an evasion before the paragraph above: the measurement
-was blocked by absent code, and a machine would not have produced it. It is now
-the whole of the remaining obstacle. The kernels are written, the instruction is
-verified present in the emitted object, the arithmetic is verified against exact
-`int64` on every row, the harness refuses to report a number it did not measure,
-and the benchmark needs no model, no container and no privileges. Every machine
-available to this work reports `avx2 fma` and nothing further. One run of
-`second_datapoint.sh` on a part with `avx512vnni` or `avx_vnni` replaces §9.1's
-modelled figures with measured ones, and until that run exists we report the
-model and label it as such.
+### 9.2 VNNI, measured
+
+A reviewer ran that benchmark on an Intel Xeon reporting `avx512_vnni`: eight
+invocations, the ISA check passing on each, all four kernels exact against
+`int64` arithmetic on every row. **This is the paper's largest limitation moving
+from modelled to measured**, and it moves only part of the way, so both parts are
+stated.
+
+| | AVX2 | VNNI | |
+|---|---:|---:|---|
+| median $S$ (`i2_s`/t5b) | 2.04 | **2.22** | $+8.8\%$ |
+| `i2_s` gain from VNNI | — | — | $1.24\times$ |
+| t5b gain from VNNI | — | — | $1.15\times$ |
+| runs in which $S$ rose | — | 6 of 8 | |
+
+**The direction is the predicted one and the mechanism is the predicted one.**
+§9.1 argued that `VPDPBUSD` must help the baseline more than the packed format,
+because the baseline spends 4 of its 17 vector operations in the contraction the
+instruction collapses while the packed kernel spends 5 of 42. The measurement
+agrees: $1.24\times$ against $1.15\times$, and $S$ rises accordingly.
+
+**The size is modest and the spread is not smaller than the effect.** $S$ rose in
+six runs of eight, which is a majority and not a clean separation; the host is a
+shared two-vCPU sandbox, and the reviewer's own caveat — that run-to-run
+variation there exceeds the effect being measured — is adopted rather than
+argued away. An $8.8\%$ shift in $S$ against $\Sigma$ values that range from 1.35
+to 3.08 does not by itself decide (18) either way at any thread count.
+
+**What the static model got right, and where it was pessimistic.** §9.1 bounded
+VNNI's cost at 0–14% and this measurement lands at 8.8%, inside that band. The
+model predicted $S(\text{vnni}) = 2.08$ on `znver4` and 2.51 on the two Intel
+targets; the measured 2.22 sits between them. Given that the model's negative
+control failed and its VNNI loops had never been executed, agreement to this
+degree is more than was claimed for it.
+
+**What remains open is a clean machine, not the question.** Two vCPUs, no
+pinning, shared tenancy. A dedicated part would turn six-of-eight into a
+separation or refute it, and nothing here forecloses either. The claim this
+subsection supports is narrow: on real VNNI hardware the packed format's
+arithmetic disadvantage grows by roughly a tenth, in the direction and for the
+reason §9.1 predicted, which is a smaller penalty than the eight-bit storage
+choice of a system built for those targets would suggest.
 
 ### A second microarchitecture, measured
 
@@ -1101,10 +1128,9 @@ larger than 2 B exists. The synthetic 60-layer graph of §7.4 doubles the weight
 traffic but not the head count, hidden size or vocabulary.
 
 **Measurement environment.** The host is shared and the run-to-run spread is
-comparable to the effect. An earlier draft of this work reported "four runs out
-of four" at $1.165\times$; those four were taken in the quietest window
-available, and four further runs at ordinary load include one the denser format
-loses. The headline is therefore the five-invocation replication of §7.4.
+comparable to the effect: across eight invocations at ordinary load, one has the
+denser format losing. The headline is therefore the five-invocation replication
+of §7.4 rather than any single run.
 
 **Verification scope.** The round trip is exact on all 210 tensors and all
 2,084,044,800 weights, and so — since this revision — is the dot-product
@@ -1157,10 +1183,10 @@ sides of that comparison are measurable in minutes. On the part measured here
 the condition holds from four cores upward, and the deployed model is 9% smaller
 and 13–14% faster with bit-identical output.
 
-The same inequality predicts that the result will narrow on a part with VNNI —
-by 0 to 14% in the static model of §9.1, though that model's negative control
-failed and it is no substitute for the run — and an independent system built for
-such parts chose the opposite extreme of the same trade-off. That is not a
+The same inequality predicts that the result will narrow on a part with VNNI,
+and §9.2 measures that narrowing at 8.8% — the direction and mechanism the
+condition names, at a magnitude the eight-bit storage choice of a system built
+for such parts would not have led one to expect. That is not a
 caveat appended to a positive result; it is the result, which is that the choice
 of weight density is a hardware-dependent optimisation with a computable
 decision rule, rather than a property of the model. What §9.1 does settle is
@@ -1212,6 +1238,58 @@ baseline is fetched from that commit by a script rather than redistributed.
 Everything else — the packing, the kernels, the suite, all four benchmarks, the
 converters and every evidence file — builds and runs from a clone with a
 compiler and Python alone.
+
+# Appendix A: Corrections made during preparation
+
+Seven claims in earlier drafts of this paper were wrong and were corrected
+before submission. They are collected here rather than annotated through the
+body, so that the body states what holds and this states how it got there. Each
+was found by a named mechanism, and where that mechanism is now automated the
+gate step is given.
+
+1. **The base-3 packing was claimed as novel.** It is `TQ1_0`'s construction in
+   `llama.cpp` and is published with a correctness theorem as Spectra 1.1's
+   `TQ1`. Withdrawn in §1.1; §7.6 measures against it. Found by a reviewer,
+   twice — first the pull request, then the paper.
+
+2. **"The removal needs no format change and no kernel work" and
+   "unconditionally exact on the product"** (dead-neuron removal). Both false:
+   `src/models/bitnet.cpp` allocates with the global `n_ff`, four lines must
+   change, and the sub-layer RMS norm rescales the output by
+   $\sqrt{(K-d)/K} = 0.751$ in layer 1. Corrected in §8.
+
+3. **Matmuls were given as 30% of a token** from the standalone replay, while
+   the in-situ counter of §7.4 measures 43.6%. The replay is a lower bound and
+   was read as an estimate.
+
+4. **Upstream's `int16` overflow was reported as "200 of 200"** rows at
+   $K = 6912$. Over all thirty such tensors it is 11,998 of 12,000: with 0.78%
+   of headroom the outcome turns on each row's own code mean. Found by extending
+   the dot-product check from seven tensors to all 210.
+
+5. **"Four runs out of four"** at $1.165\times$ were four runs from the quietest
+   window available; four further runs at ordinary load include one the denser
+   format loses. The headline became the five-invocation replication.
+
+6. **The `i2_s` matmul time was derived by difference** across two `llama-bench`
+   runs on a host at load 2 to 10, which puts every fluctuation between them into
+   that one number. Both arms are now probed at the same dispatch site. The
+   stated reason for not instrumenting the control arm — that it must stay
+   unperturbed — did not survive measurement: `benchmarks/bench_probe_cost.c`
+   puts the probe at 0.18% of a matmul call.
+
+7. **`second_datapoint.sh` claimed a run on a VNNI part would settle the VNNI
+   question.** It would not have: no compiler emits `VPDPBUSD` from the AVX2
+   idiom, so its binaries contained none. Found by a reviewer with `objdump`.
+   `benchmarks/bench_vnni.c` writes the instruction and verifies at run time that
+   its own binary contains it; §9.2 is the resulting measurement.
+
+Three of the seven were found by a reviewer and four by checks written after the
+fact. Those checks are in the repository and run as gate steps: the two
+renderings of this paper are compared claim by claim, every path it names is
+resolved against the public tree, and the integration's three representations
+are checked against each other.
+
 
 # References
 

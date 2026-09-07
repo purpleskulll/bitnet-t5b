@@ -85,12 +85,15 @@ agrees with the two-bit baseline to six significant figures. We further report
 that \SI{4.76}{\percent} of the model's feed-forward neurons are identically
 zero, that the dead index sets of the gate and up projections coincide in all
 thirty layers, and that an independent fine-tune revives none of them. All
-results are from a single AVX2 microarchitecture \emph{without} VNNI. A static
-pipeline model, calibrated against that host to \SI{3.0}{\percent}, finds the
-arithmetic ratio stable across Zen 3/4/5, Ice Lake and Sapphire Rapids, so it is
-not an artefact of one narrow part; the same model bounds the cost of VNNI at
-\numrange{0}{14}\,\% but cannot measure it, and an independent system targeting
-VNNI stores ternary weights at eight bits for that reason.
+results are from a single AVX2 microarchitecture \emph{without} VNNI. Two
+independent runs bound that limitation: a static pipeline model, calibrated
+against the host to \SI{3.0}{\percent}, finds the arithmetic ratio stable across
+Zen 3/4/5, Ice Lake and Sapphire Rapids, and a reviewer's Intel Xeon reproduces
+it at \num{2.11} against our \num{2.43}. On real VNNI hardware the same reviewer
+measures the ratio rising by \SI{8.8}{\percent} --- the direction predicted, from
+the predicted mechanism, at a magnitude smaller than the eight-bit storage choice
+of a system built for those targets would suggest, though on a shared host whose
+spread exceeds the effect.
 \end{abstract}
 
 \section{Introduction}
@@ -137,8 +140,7 @@ before every computation, negating the performance benefit'' --- a decision made
 for targets whose dot-product instruction (\code{VPDPBUSD}, ARM \code{SDOT})
 consumes eight-bit operands.
 
-\paragraph{The base-3 packing itself is not new, and an earlier draft of this
-paper claimed it was.} \code{llama.cpp} has carried \code{TQ1\_0} since August
+\paragraph{The base-3 packing itself is not new.} \code{llama.cpp} has carried \code{TQ1\_0} since August
 2024 (pull request~\#8151): its block structure in \code{ggml-common.h} is
 annotated \emph{``5 elements per byte ($3^5 = 243 < 256$)''}, it decodes without
 a table, and it has an AVX2 dot product. \code{TQ1\_0} reaches \num{1.6875}
@@ -595,10 +597,9 @@ $K = 2560$ wrap under the same activations.
 The two exceptions are the bound speaking, not noise, and they change how the
 claim must be phrased. The margin is $256 \times 127 = \num{32512}$ against
 \num{32767}, or \SI{0.78}{\percent}, so whether a row overflows turns on its own
-code mean and a row slightly below average clears the ceiling. An earlier draft
-measured 200 of 200 on two tensors and wrote the prediction as an absolute; at
-\num{12000} rows the tail is visible and the correct statement is statistical.
-Direction and magnitude hold exactly; ``must'' does not.
+code mean and a row slightly below average clears the ceiling. At \num{12000}
+rows that tail is visible, so the correct statement is statistical rather than
+absolute: direction and magnitude hold exactly, ``must'' does not.
 
 Whether ordinary activations reach that state is not established; the mechanism
 is. On random \code{int8} the baseline is exact on all \num{42000} rows tried,
@@ -712,14 +713,13 @@ integration now carries the fix.} It is not measured but derived, from two
 \code{llama-bench} runs taken separately on a host whose load ranged from 2 to
 10 (\SI{4.905}{\second} against \SI{5.479}{\second} per repetition), so every
 fluctuation \emph{between} those runs lands entirely in the \code{i2\_s} matmul
-figure. The stated reason for instrumenting only one arm --- that the control
-must stay unperturbed --- does not survive scrutiny either. The integration now
-probes \textbf{both} arms at the same dispatch site in the same expression, so
+figure. The integration therefore probes \textbf{both} arms at the same
+dispatch site in the same expression, so
 the ratio becomes a quotient of two measured quantities and whatever the
 dispatch costs is common to both and divides out.
 
-The probe's cost was measured rather than assumed, and the assumption would have
-been wrong instructively. An \code{rdtsc} pair alone costs \SI{19}{\nano\second}
+The probe's cost is measured rather than assumed. An \code{rdtsc} pair alone
+costs \SI{19}{\nano\second}
 and is flat in thread count. The same pair with an atomic add to \emph{one
 shared counter} --- what the original instrumentation used --- costs
 \SI{18.7}{\nano\second} at one thread and \SI{87.6}{\nano\second} at six, a
@@ -773,9 +773,9 @@ arms, so a \SI{25}{\percent} cut in weight bytes acts on under half the token
 and \SI{14}{\percent} is the expected order.
 
 The standalone replay of \S\ref{sec:traffic} puts the same matmuls at about
-\SI{14}{\milli\second}, or \SI{30}{\percent}, and an earlier draft quoted that
-number here. The gap is the replay's, not the model's: it drives
-\code{bitnet\_vec\_dot\_i2\_i8\_s\_reference}, which \S\ref{sec:endtoend}
+\SI{14}{\milli\second}, or \SI{30}{\percent}. That gap is the replay's, not the
+model's: it drives
+\code{bitnet\_\allowbreak vec\_\allowbreak dot\_\allowbreak i2\_\allowbreak i8\_\allowbreak s\_\allowbreak reference}, which \S\ref{sec:endtoend}
 measures at $1.6\times$ the speed of the path \code{llama.cpp} actually
 dispatches. The replay is a lower bound on what the matmuls cost and was read as
 an estimate of it. Read as bandwidth, the generation loop uses
@@ -971,10 +971,12 @@ while leaving the decode unchanged; by~\eqref{eq:surplus} this raises $S$ and
 lowers $\Sigma$, moving~\eqref{eq:condition} against a packed code. The
 \emph{Litespark} system, targeting VNNI and ARM \code{SDOT}, stores ternary
 weights at eight bits for precisely this reason. \S\ref{sec:microarch}
-\emph{bounds} that move at \numrange{0}{14}\,\% but does not measure it.
-\textbf{The central result should be read as a property of AVX2 without VNNI
-until it is run on a VNNI part.} The code compiles for \code{-mavxvnni} here but
-cannot execute, and no such measurement is claimed.
+\emph{bounds} that move at \numrange{0}{14}\,\% from a static model;
+\S\ref{sec:vnnimeas} \emph{measures} it at \SI{8.8}{\percent} on hardware we do
+not own. \textbf{The central result is still ours only for AVX2 without VNNI}
+--- every end-to-end number in \S\ref{sec:results} comes from this one host, and
+no VNNI machine has run the model. What \S\ref{sec:vnnimeas} settles is the
+kernel-level ratio, not the deployed one.
 
 \subsection{How far a model can substitute for the hardware}\label{sec:microarch}
 
@@ -1066,15 +1068,11 @@ it by \numrange{0}{14}\,\%: $S$ reaches \num{2.08} on \code{znver4} and
 \num{2.51} on \code{icelake-server} and \code{sapphirerapids}. Modest, not
 decisive.
 
-\textbf{None of this is a measurement}, and for some time we claimed one was a
-single command away when it was not. \code{second\_datapoint.sh} carried a
-header saying a run on a VNNI part would settle the question. A reviewer ran it
-on an Intel Xeon reporting \code{avx512\_vnni}, then checked the binaries with
-\code{objdump}: \textbf{zero \code{vpdpbusd}}, with \code{-march=native} in the
-flags. No compiler contracts \code{vpmaddubsw} followed by an accumulating
-\code{vpaddw} into \code{VPDPBUSD} as an idiom --- the instruction must be
-written, and it had not been. Every run of that script measured the AVX2 kernels
-on whatever microarchitecture it was given.
+\textbf{None of this is a measurement.} It also cannot become one by
+recompiling: no compiler contracts \code{vpmaddubsw} followed by an accumulating
+\code{vpaddw} into \code{VPDPBUSD} as an idiom, so an AVX2 kernel built with
+\code{-march=native} on a VNNI part contains \textbf{zero \code{vpdpbusd}} and
+measures AVX2 on that part. The instruction has to be written.
 
 \code{bench\_vnni.c} now writes the instruction: \code{i2\_s} and t5b in both
 forms, the VNNI pair contracting into \code{int32} accumulators, which for t5b
@@ -1086,17 +1084,57 @@ exits 3 rather than run on a CPU without the feature. A second build models
 cannot execute; it passes on all 100 rows for all four kernels and deliberately
 prints no timings.
 
-\textbf{What is missing is therefore hardware access, and nothing else.} That
-sentence would have been an evasion before the paragraph above: the measurement
-was blocked by absent code, and a machine would not have produced it. It is now
-the whole of the remaining obstacle. The kernels are written, the instruction is
-verified present in the emitted object, the arithmetic is verified against exact
-\code{int64} on every row, the harness refuses to report a number it did not
-measure, and the benchmark needs no model, no container and no privileges. Every
-machine available to this work reports \code{avx2 fma} and nothing further. One
-run on a part with \code{avx512vnni} or \code{avx\_vnni} replaces the modelled
-figures below with measured ones, and until that run exists we report the model
-and label it as such.
+\subsection{VNNI, measured}\label{sec:vnnimeas}
+
+A reviewer ran that benchmark on an Intel Xeon reporting \code{avx512\_vnni}:
+eight invocations, the ISA check passing on each, all four kernels exact against
+\code{int64} arithmetic on every row. \textbf{This is the paper's largest
+limitation moving from modelled to measured}, and it moves only part of the way,
+so both parts are stated.
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+ & AVX2 & VNNI & \\
+\midrule
+median $S$ (\code{i2\_s}/t5b) & \num{2.04} & \textbf{\num{2.22}} & $+\SI{8.8}{\percent}$ \\
+\code{i2\_s} gain from VNNI & --- & --- & $1.24\times$ \\
+t5b gain from VNNI          & --- & --- & $1.15\times$ \\
+runs in which $S$ rose      & --- & 6 of 8 & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{The direction is the predicted one and the mechanism is the predicted
+one.} \S\ref{sec:microarch} argued that \code{VPDPBUSD} must help the baseline
+more than the packed format, because the baseline spends 4 of its 17 vector
+operations in the contraction the instruction collapses while the packed kernel
+spends 5 of 42. The measurement agrees: $1.24\times$ against $1.15\times$, and
+$S$ rises accordingly.
+
+\textbf{The size is modest and the spread is not smaller than the effect.} $S$
+rose in six runs of eight, a majority and not a clean separation; the host is a
+shared two-vCPU sandbox, and the reviewer's own caveat --- that run-to-run
+variation there exceeds the effect being measured --- is adopted rather than
+argued away. An \SI{8.8}{\percent} shift in $S$ against $\Sigma$ values ranging
+from \num{1.35} to \num{3.08} does not by itself decide
+\eqref{eq:condition} either way at any thread count.
+
+\textbf{What the static model got right, and where it was pessimistic.}
+\S\ref{sec:microarch} bounded VNNI's cost at \numrange{0}{14}\,\% and this
+measurement lands at \SI{8.8}{\percent}, inside that band. The model predicted
+$S(\text{vnni}) = \num{2.08}$ on \code{znver4} and \num{2.51} on the two Intel
+targets; the measured \num{2.22} sits between them. Given that the model's
+negative control failed and its VNNI loops had never been executed, agreement to
+this degree is more than was claimed for it.
+
+\textbf{What remains open is a clean machine, not the question.} Two vCPUs, no
+pinning, shared tenancy. A dedicated part would turn six-of-eight into a
+separation or refute it, and nothing here forecloses either. The claim this
+subsection supports is narrow: on real VNNI hardware the packed format's
+arithmetic disadvantage grows by roughly a tenth, in the direction and for the
+reason \S\ref{sec:microarch} predicted, which is a smaller penalty than the
+eight-bit storage choice of a system built for those targets would suggest.
 
 \subsection{A second microarchitecture, measured}\label{sec:second}
 
@@ -1144,10 +1182,9 @@ checkpoint larger than 2\,B exists. The synthetic 60-layer graph doubles weight
 traffic but not head count, hidden size or vocabulary.
 
 \paragraph{Measurement environment.} The host is shared and run-to-run spread is
-comparable to the effect. An earlier draft reported ``four runs out of four'' at
-$1.165\times$; those four were taken in the quietest window available, and four
-further runs at ordinary load include one the denser code loses. The headline is
-therefore the five-invocation replication.
+comparable to the effect: across eight invocations at ordinary load, one has the
+denser code losing. The headline is therefore the five-invocation replication
+rather than any single run.
 
 \paragraph{Verification scope.} The round trip is exact on all 210 tensors and
 all \num{2084044800} weights, and so --- since this revision --- is the
@@ -1197,11 +1234,11 @@ measured here the condition holds from four cores upward, and the deployed model
 is \SI{9}{\percent} smaller and \SIrange{13}{14}{\percent} faster with
 bit-identical output.
 
-The same inequality predicts the result will narrow on a part with VNNI --- by
-\numrange{0}{14}\,\% in the static model of \S\ref{sec:microarch}, though that
-model's negative control failed and it is no substitute for the run --- and an
-independent system built for such parts chose the opposite extreme of the same
-trade-off. That is not a caveat appended to a positive result; it is the result,
+The same inequality predicts the result will narrow on a part with VNNI, and
+\S\ref{sec:vnnimeas} measures that narrowing at \SI{8.8}{\percent} --- the
+direction and mechanism the condition names, at a magnitude the eight-bit
+storage choice of a system built for such parts would not have led one to
+expect. That is not a caveat appended to a positive result; it is the result,
 which is that weight density is a hardware-dependent optimisation with a
 computable decision rule rather than a property of the model. What
 \S\ref{sec:microarch} does settle is that the rule's input is not parochial:
@@ -1210,6 +1247,62 @@ generations, $S$ ranges from \num{2.10} to \num{2.50} and every newer target
 sits at or \emph{below} the Zen 2 value it was derived on, by at most
 \SI{16}{\percent}. The ratio never worsens on a wider machine, so the rule is
 worth applying rather than an accident of the one part that produced it.
+
+\section*{Appendix A: Corrections made during preparation}
+
+Seven claims in earlier drafts of this paper were wrong and were corrected
+before submission. They are collected here rather than annotated through the
+body, so that the body states what holds and this states how it got there. Each
+was found by a named mechanism, and where that mechanism is now automated the
+gate step is given.
+
+\begin{enumerate}
+\item \textbf{The base-3 packing was claimed as novel.} It is \code{TQ1\_0}'s
+construction in \code{llama.cpp} and is published with a correctness theorem as
+Spectra~1.1's \code{TQ1}~\cite{spectra}. Withdrawn in \S\ref{sec:contrib};
+\S\ref{sec:tq10} measures against it. Found by a reviewer, twice --- first the
+pull request, then the paper.
+
+\item \textbf{``The removal needs no format change and no kernel work'' and
+``unconditionally exact on the product''} (dead-neuron removal). Both false:
+\code{src/models/bitnet.cpp} allocates with the global \code{n\_ff}, four lines
+must change, and the sub-layer RMS norm rescales the output by
+$\sqrt{(K-d)/K} = \num{0.751}$ in layer~1. Corrected in \S\ref{sec:dead}.
+
+\item \textbf{Matmuls were given as \SI{30}{\percent} of a token} from the
+standalone replay, while the in-situ counter of \S\ref{sec:endtoend} measures
+\SI{43.6}{\percent}. The replay is a lower bound and was read as an estimate.
+
+\item \textbf{Upstream's \code{int16} overflow was reported as ``200 of 200''}
+rows at $K = 6912$. Over all thirty such tensors it is \num{11998} of
+\num{12000}: with \SI{0.78}{\percent} of headroom the outcome turns on each row's
+own code mean. Found by extending the dot-product check from seven tensors to
+all 210.
+
+\item \textbf{``Four runs out of four''} at $1.165\times$ were four runs from the
+quietest window available; four further runs at ordinary load include one the
+denser code loses. The headline became the five-invocation replication.
+
+\item \textbf{The i2\_s matmul time was derived by difference} across two
+\code{llama-bench} runs on a host at load 2 to 10, which puts every fluctuation
+between them into that one number. Both arms are now probed at the same dispatch
+site. The stated reason for not instrumenting the control arm --- that it must
+stay unperturbed --- did not survive measurement: \code{bench\_probe\_cost.c}
+puts the probe at \SI{0.18}{\percent} of a matmul call.
+
+\item \textbf{\code{second\_datapoint.sh} claimed a run on a VNNI part would
+settle the VNNI question.} It would not have: no compiler emits
+\code{VPDPBUSD} from the AVX2 idiom, so its binaries contained none. Found by a
+reviewer with \code{objdump}. \code{bench\_vnni.c} writes the instruction and
+verifies at run time that its own binary contains it; \S\ref{sec:vnnimeas} is
+the resulting measurement.
+\end{enumerate}
+
+Three of the seven were found by a reviewer and four by checks written after the
+fact. Those checks are in the repository and run as gate steps: the two
+renderings of this paper are compared claim by claim, every path it names is
+resolved against the public tree, and the integration's three representations
+are checked against each other.
 
 \section*{Data and code availability}
 

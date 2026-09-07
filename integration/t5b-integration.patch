@@ -193,8 +193,8 @@ index ec88ef2..9c1f2ac 100644
 +                    // dispatch site rather than inside each kernel is what
 +                    // makes the two comparable: whatever the dispatch costs is
 +                    // common to both arms and divides out of the ratio.
-+                    // Overhead measured by bench/bench_probe_cost.c at ~19 ns
-+                    // per probe, flat in thread count, against the 94.8 us a
++                    // Overhead measured by bench_probe_cost.c at ~19 ns per
++                    // probe, flat in thread count, against the 94.8 us a
 +                    // single matmul call takes.
 +                    const uint64_t sg_probe_t0 = bitnet_probe_tsc();
 +                    const bool     sg_ok = (sg_is_t5b

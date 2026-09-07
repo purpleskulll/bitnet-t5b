@@ -349,7 +349,20 @@ T5B_CPU_PATCHES = [
                     // bitnet_t5b_sgemm re-derives it from k and aborts if the
                     // two disagree. i2_s keeps passing nb01/type_size, which
                     // tinyBLAS_I2S_AVX ignores in favour of k/4 -- unchanged.
-                    if (!(sg_is_t5b
+                    //
+                    // BOTH ARMS ARE TIMED HERE, at one site in one expression.
+                    // The i2_s matmul time used to be derived by difference
+                    // across two llama-bench runs, which put every load
+                    // fluctuation between those runs into the i2_s number; a
+                    // reviewer rejected that and was right. Probing at the
+                    // dispatch site rather than inside each kernel is what
+                    // makes the two comparable: whatever the dispatch costs is
+                    // common to both arms and divides out of the ratio.
+                    // Overhead measured by bench_probe_cost.c at ~19 ns per
+                    // probe, flat in thread count, against the 94.8 us a
+                    // single matmul call takes.
+                    const uint64_t sg_probe_t0 = bitnet_probe_tsc();
+                    const bool     sg_ok = (sg_is_t5b
                           ? llamafile_sgemm_t5b(params,
                                              ne01, ne11, ne00,
                                              (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
@@ -367,7 +380,9 @@ T5B_CPU_PATCHES = [
                                              row_size/ggml_type_size(vec_dot_type),
                                              (char *)dst->data + i12*nb2 + i13*nb3,
                                              nb1/ggml_type_size(dst->type),
-                                             i2s_act_scales, i2s_act_sums, *scale)))""",
+                                             i2s_act_scales, i2s_act_sums, *scale));
+                    bitnet_sgemm_cycles_add(sg_is_t5b ? 1 : 0, sg_probe_t0);
+                    if (!sg_ok)""",
     ),
     (
         "gemv/gemm fast path entry",
