@@ -85,7 +85,7 @@ arithmetic under the same name.
 |---|---|
 | `paper/` | the paper: Markdown, LaTeX source, compiled PDF |
 | `src/` | the format, its kernels, the ggml-facing glue, the test suite |
-| `benchmarks/` | port throughput, thread scaling, one token's weight traffic, per-kernel rate, the VNNI comparison, and the upstream tiled shape used as a control |
+| `benchmarks/` | port throughput, thread scaling, one token's weight traffic, per-kernel rate, the VNNI comparison, the instrumentation's own cost, and the upstream tiled shape used as a control |
 | `tools/` | GGUF converters and analysis: to t5b, architecture retag, depth synthesis, dead-neuron census, tensor structure, the `i2_s` reference fetcher |
 | `integration/` | the `llama.cpp` change, as a unified diff **and** as the script that applies it |
 | `results/` | every evidence file the paper cites, each stating its own reproduction command |
@@ -120,6 +120,7 @@ by clone or by path — no model, no build of `llama.cpp`):
 | arithmetic surplus against core count | `./build/bench_threads 0.5` |
 | per-kernel rate, instruction and spill counts | `./build/bench_alu` |
 | the VNNI kernels compute the right answer | `./build/bench_vnni_emu` — runs anywhere, no VNNI needed |
+| what the in-situ cycle counter costs | `./build/bench_probe_cost` — and why the counter is per-thread |
 | VNNI against AVX2, timed | `./build/bench_vnni` — needs `avx512vnni` or `avx_vnni`; exits 3 otherwise |
 
 ## What is **not** reproducible from this repository alone, and why

@@ -36,7 +36,7 @@ I2S_REF   := src/ggml_i2s_ternary.c
 HAVE_I2S  := $(wildcard $(I2S_REF))
 
 TESTS  := $(BIN)/test_t5b $(BIN)/test_t10
-BENCH_ALWAYS := $(BIN)/bench_ports
+BENCH_ALWAYS := $(BIN)/bench_ports $(BIN)/bench_probe_cost
 BENCH_I2S    := $(BIN)/bench_alu $(BIN)/bench_threads $(BIN)/bench_token
 
 ifeq ($(HAVE_I2S),)
@@ -130,6 +130,15 @@ endif
 
 $(BIN)/bench_vnni_emu: benchmarks/bench_vnni.c $(OBJ)/ternary_t5b.o | $(OBJ)
 	$(CC) $(CFLAGS) -DT5B_EMULATE_VNNI $^ -o $@ $(LDLIBS)
+
+# What the in-situ cycle counter costs. Needs no project header and no fetched
+# reference -- it measures the probe, not the format -- so it always builds.
+# It exists because the counter's cost was asserted rather than measured: an
+# rdtsc pair is 19 ns and flat in thread count, but the same pair with an
+# atomic add to ONE SHARED counter goes 18.7 ns at one thread to 87.6 ns at
+# six, because the worker threads serialise on a single cache line.
+$(BIN)/bench_probe_cost: benchmarks/bench_probe_cost.c | $(OBJ)
+	$(CC) $(CFLAGS) -pthread $< -o $@ $(LDLIBS)
 
 bench: $(BENCH)
 ifeq ($(HAVE_I2S),)
