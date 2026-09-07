@@ -741,8 +741,21 @@ occasionally interrupts the contraction; it is part of every block, and it is
 inside the 94.4%.
 
 That also settles which of the two `i2_s` implementations the overflow of
-§7.1 belongs to. The reference kernel accumulates 32 blocks
-before folding and overflows; the path that runs folds every block and cannot.
+§7.1 belongs to, and sharpens why it happens. The kernel feeds
+`vpmaddubsw` with raw 2-bit codes against `int8` activations, so an
+`int16` lane takes at most $2 \cdot 3 \cdot 127 = 762$ per instruction and
+$4 \cdot 762 = 3048$ per block: **ten blocks may be accumulated, not
+thirty-two**. The reference kernel's 32 is three times its own bound, which is
+the overflow; the dispatched kernel's 1 is a tenth of it.
+
+**The nine omitted folds cost 7.5% of the dispatched path's
+matmul time.** A tree identical but for accumulating ten blocks before folding
+measures $9.49 \times 10^{9}$ cycles against $10.25 \times 10^{9}$, three runs
+each, with *identical* perplexity --- 108.6810 on four chunks of
+WikiText-2 in both. That is one measured component of the 25% by
+which the dispatched path trails t5b, not an explanation of it, and it is not a
+proposal: the `i2_s` path is the control arm of every comparison here, the
+modified kernel lives in its own tree, and no reported ratio is built from it.
 
 These probes are compiled out by default, and that is not tidiness. They fire
 once per $\mathit{RM} \times \mathit{RN}$ tile rather than once per call, and
