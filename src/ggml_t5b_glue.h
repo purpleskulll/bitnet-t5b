@@ -152,7 +152,21 @@ void bitnet_t5b_sgemm(int64_t m, int64_t n, int64_t k,
  * ggml worker threads with a relaxed atomic. Printed unconditionally at exit
  * by bitnet_t5b_report(), registered exactly once on first kernel entry. */
 extern uint64_t bitnet_t5b_calls;       /* vec_dot / gemv / gemm path */
-extern uint64_t bitnet_t5b_sgemm_calls; /* the llamafile path         */
+extern uint64_t bitnet_t5b_sgemm_calls;
+
+/* Summed over the per-thread slots; see the .c for why they are per-thread. */
+uint64_t bitnet_t5b_cycles_total(void);
+
+/* The symmetric SGEMM probe. Both matmul arms are timed at the SAME dispatch
+ * site -- index 0 for i2_s, 1 for t5b -- so the dispatch overhead is common to
+ * both and divides out of the ratio. This replaces deriving the i2_s time by
+ * difference across two llama-bench runs, which put every load fluctuation
+ * between those runs into the i2_s number. Overhead measured by
+ * bench/bench_probe_cost.c: ~19 ns per probe, flat in thread count, against the
+ * 94.8 us a single matmul call takes. */
+uint64_t bitnet_probe_tsc(void);
+void     bitnet_sgemm_cycles_add(int is_t5b, uint64_t t0);
+uint64_t bitnet_sgemm_cycles_total(int is_t5b); /* the llamafile path         */
 void bitnet_t5b_report(void);
 
 #ifdef __cplusplus

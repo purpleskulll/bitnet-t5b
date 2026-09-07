@@ -157,7 +157,7 @@ index ec88ef2..9c1f2ac 100644
                      for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
                          quantize_row_i8_s(
                              (float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11),
-@@ -1448,14 +1480,37 @@ UseGgmlGemm1:;
+@@ -1448,14 +1480,50 @@ UseGgmlGemm1:;
          const size_t row_size = ggml_row_size(vec_dot_type, ne10);
  
          // I2_S: use fused sgemm with inline post-processing (no barrier needed)
@@ -184,7 +184,20 @@ index ec88ef2..9c1f2ac 100644
 +                    // bitnet_t5b_sgemm re-derives it from k and aborts if the
 +                    // two disagree. i2_s keeps passing nb01/type_size, which
 +                    // tinyBLAS_I2S_AVX ignores in favour of k/4 -- unchanged.
-+                    if (!(sg_is_t5b
++                    //
++                    // BOTH ARMS ARE TIMED HERE, at one site in one expression.
++                    // The i2_s matmul time used to be derived by difference
++                    // across two llama-bench runs, which put every load
++                    // fluctuation between those runs into the i2_s number; a
++                    // reviewer rejected that and was right. Probing at the
++                    // dispatch site rather than inside each kernel is what
++                    // makes the two comparable: whatever the dispatch costs is
++                    // common to both arms and divides out of the ratio.
++                    // Overhead measured by bench/bench_probe_cost.c at ~19 ns
++                    // per probe, flat in thread count, against the 94.8 us a
++                    // single matmul call takes.
++                    const uint64_t sg_probe_t0 = bitnet_probe_tsc();
++                    const bool     sg_ok = (sg_is_t5b
 +                          ? llamafile_sgemm_t5b(params,
 +                                             ne01, ne11, ne00,
 +                                             (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
@@ -198,16 +211,18 @@ index ec88ef2..9c1f2ac 100644
                                               ne01, ne11, ne00,
                                               (const char *)src0->data + i12/r2*nb02 + i13/r3*nb03,
                                               nb01/ggml_type_size(src0->type),
-@@ -1463,7 +1518,7 @@ UseGgmlGemm1:;
+@@ -1463,7 +1531,9 @@ UseGgmlGemm1:;
                                               row_size/ggml_type_size(vec_dot_type),
                                               (char *)dst->data + i12*nb2 + i13*nb3,
                                               nb1/ggml_type_size(dst->type),
 -                                             i2s_act_scales, i2s_act_sums, *scale))
-+                                             i2s_act_scales, i2s_act_sums, *scale)))
++                                             i2s_act_scales, i2s_act_sums, *scale));
++                    bitnet_sgemm_cycles_add(sg_is_t5b ? 1 : 0, sg_probe_t0);
++                    if (!sg_ok)
                          goto UseGgmlGemm2;
              return;
          }
-@@ -1489,7 +1544,10 @@ UseGgmlGemm2:;
+@@ -1489,7 +1559,10 @@ UseGgmlGemm2:;
  #endif
  
      // I2_S GEMV/GEMM fast path: use optimized SIMD kernels for 2D weight matrices
@@ -219,7 +234,7 @@ index ec88ef2..9c1f2ac 100644
          const void * src1_wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
          const size_t i2s_row_size = ggml_row_size(vec_dot_type, ne10);
          const size_t src1_col_stride = src1_cont || src1->type != vec_dot_type ? i2s_row_size : nb11;
-@@ -1502,7 +1560,12 @@ UseGgmlGemm2:;
+@@ -1502,7 +1575,12 @@ UseGgmlGemm2:;
          src0_end   = (src0_end   % matmul_num_cols) ? src0_end   + matmul_num_cols - (src0_end   % matmul_num_cols) : src0_end;
          if (src0_start >= src0_end) return;
  
@@ -233,7 +248,7 @@ index ec88ef2..9c1f2ac 100644
          const float * act_scales = (const float *)((const char *)src1_wdata + (ne11 * ne10));
          const int32_t * act_sums = (const int32_t *)((const char *)act_scales + ne11 * sizeof(float));
          const int64_t n_rows = src0_end - src0_start;
-@@ -1515,10 +1578,17 @@ UseGgmlGemm2:;
+@@ -1515,10 +1593,17 @@ UseGgmlGemm2:;
              float * tmp = (float *)alloca(n_rows * 4 * sizeof(float));
  
              for (int64_t col_start = 0; col_start < n_gemm_cols; col_start += 4) {
@@ -255,7 +270,7 @@ index ec88ef2..9c1f2ac 100644
  
                  for (int64_t col = 0; col < 4; col++) {
                      float * dst_row = (float *)((char *)dst->data + (col_start + col) * nb1) + src0_start;
-@@ -1535,10 +1605,17 @@ UseGgmlGemm2:;
+@@ -1535,10 +1620,17 @@ UseGgmlGemm2:;
          {
              float * tmp = (float *)alloca(n_rows * sizeof(float));
              for (int64_t iter = (ne11 >= 4 ? ne11 - ne11 % 4 : 0); iter < ne11; iter++) {

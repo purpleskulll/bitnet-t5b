@@ -36,17 +36,38 @@ uint64_t bitnet_t5b_sgemm_calls = 0;
  * is the wrong quantity instead and the memory left to the weight stream in a
  * real run is smaller than the isolated measurement suggests.
  *
- * ONLY THIS FILE IS INSTRUMENTED, which is deliberate. The i2_s path is the
- * control arm and must stay bit-identical and unperturbed, so its matmul time
- * is obtained by DIFFERENCE instead: everything a token does apart from the
- * weight matmuls is identical between the arms, so
+ * THIS FILE USED TO BE THE ONLY INSTRUMENTED ONE, and the i2_s time was
+ * obtained by DIFFERENCE instead:
  *
- *     T_other      = T_total(t5b)  - T_matmul(t5b)      [both measured here]
- *     T_matmul(i2s) = T_total(i2s) - T_other            [T_total measured]
+ *     T_other       = T_total(t5b) - T_matmul(t5b)     [both measured here]
+ *     T_matmul(i2s) = T_total(i2s) - T_other           [T_total measured]
  *
- * and the ratio follows. The cost of the instrumentation is one rdtsc pair per
- * entry, against a call that processes a whole tensor slice. */
-uint64_t bitnet_t5b_cycles      = 0;
+ * The stated reason was that the control arm must stay unperturbed. A reviewer
+ * rejected that and was right: the two T_total figures come from two separate
+ * llama-bench runs on a host at load 2 to 10 (4.905 s against 5.479 s per rep),
+ * so every load fluctuation BETWEEN the runs lands entirely in the i2_s matmul
+ * number. The resulting 1.606x is softer than the paragraph quoting it sounds,
+ * and it cannot separate the three candidate causes -- dispatch, accumulator
+ * fold, per-column post-processing -- because it produces one number for all
+ * three together. The integration now carries a SYMMETRIC pair of counters
+ * (bitnet_sgemm_cycles_add, wired into the sgemm dispatch site by
+ * scripts/apply_integration.py) so the ratio is a division of two measured
+ * quantities rather than of one measured and one inferred.
+ *
+ * THE COUNTER IS PER-THREAD, and that is not premature tidying. It was one
+ * shared global, and bench_probe_cost.c measures what that costs: 18.7 ns per
+ * probe at one thread rising to 87.6 ns at six, a factor of 4.7, because every
+ * ggml worker issues an atomic read-modify-write to the same cache line and
+ * they serialise on the coherence protocol rather than on the instruction. The
+ * padded per-thread form measures flat at ~19 ns from one thread to six.
+ *
+ * Neither figure endangers the measurement -- against the 94.8 us a single
+ * matmul call takes, the worst case is 0.09 % per probe and 0.18 % for the
+ * entry/exit pair -- but the shared counter's cost GREW WITH THREAD COUNT,
+ * which is exactly the axis section 7.4 compares along, and a systematic error
+ * that tracks the independent variable is the kind worth removing even when it
+ * is small. */
+#define T5B_MAX_THREADS 64
 
 static inline uint64_t t5b_rdtsc(void)
 {
@@ -55,9 +76,72 @@ static inline uint64_t t5b_rdtsc(void)
     return ((uint64_t) hi << 32) | lo;
 }
 
+
+struct t5b_counter { uint64_t v; char pad[64 - sizeof(uint64_t)]; };
+static struct t5b_counter g_t5b_cycles[T5B_MAX_THREADS];
+
+/* Slot per thread, assigned once on first use. __thread and not a hash of
+ * pthread_self(): ggml reuses its worker pool, so the assignment survives, and
+ * an id collision would silently merge two threads' counters back onto one
+ * line and reintroduce exactly the contention this removes. */
+static _Thread_local int t5b_slot = -1;
+static int g_t5b_next_slot = 0;
+
+static inline int t5b_my_slot(void)
+{
+    if (t5b_slot < 0) {
+        const int s = __atomic_fetch_add(&g_t5b_next_slot, 1, __ATOMIC_RELAXED);
+        /* More threads than slots is not a reason to lose counts: fall back to
+         * slot 0, which is contended but correct. Silently dropping the sample
+         * would understate the matmul time, which is the direction that
+         * flatters this work. */
+        t5b_slot = (s < T5B_MAX_THREADS) ? s : 0;
+    }
+    return t5b_slot;
+}
+
+uint64_t bitnet_t5b_cycles_total(void)
+{
+    uint64_t s = 0;
+    for (int i = 0; i < T5B_MAX_THREADS; ++i)
+        s += __atomic_load_n(&g_t5b_cycles[i].v, __ATOMIC_RELAXED);
+    return s;
+}
+
+/* The symmetric pair, timed at the SGEMM DISPATCH SITE rather than inside the
+ * kernels -- [0] = i2_s, [1] = t5b. Both arms are probed at the same point in
+ * the same expression, so whatever the dispatch itself costs is common to both
+ * and divides out of the ratio. That is the property the difference method
+ * lacked and the reason this is not simply "the i2_s counter": measuring one
+ * arm inside its kernel and the other at its call site would have swapped one
+ * asymmetry for another.
+ *
+ * These are separate from g_t5b_cycles above, which stays because it covers the
+ * vec_dot entry points that have no dispatch-site equivalent. Nothing is
+ * double-counted: they are different counters answering different questions. */
+static struct t5b_counter g_sgemm_cycles[2][T5B_MAX_THREADS];
+
+uint64_t bitnet_probe_tsc(void) { return t5b_rdtsc(); }
+
+void bitnet_sgemm_cycles_add(int is_t5b, uint64_t t0)
+{
+    __atomic_fetch_add(&g_sgemm_cycles[is_t5b ? 1 : 0][t5b_my_slot()].v,
+                       t5b_rdtsc() - t0, __ATOMIC_RELAXED);
+}
+
+uint64_t bitnet_sgemm_cycles_total(int is_t5b)
+{
+    uint64_t s = 0;
+    for (int i = 0; i < T5B_MAX_THREADS; ++i)
+        s += __atomic_load_n(&g_sgemm_cycles[is_t5b ? 1 : 0][i].v,
+                             __ATOMIC_RELAXED);
+    return s;
+}
+
 static inline void t5b_acc(const uint64_t *t0)
 {
-    __atomic_fetch_add(&bitnet_t5b_cycles, t5b_rdtsc() - *t0, __ATOMIC_RELAXED);
+    __atomic_fetch_add(&g_t5b_cycles[t5b_my_slot()].v, t5b_rdtsc() - *t0,
+                       __ATOMIC_RELAXED);
 }
 
 /* GCC's cleanup attribute, not an accumulate before each return: these entry
@@ -79,13 +163,14 @@ void bitnet_t5b_report(void)
 {
     fprintf(stderr,
             "[bitnet-t5b] type=43 bits/weight=1.600 calls=%llu sgemm=%llu "
-            "matmul_cycles=%llu\n",
+            "matmul_cycles=%llu sgemm_cycles_i2s=%llu sgemm_cycles_t5b=%llu\n",
             (unsigned long long) __atomic_load_n(&bitnet_t5b_calls,
                                                  __ATOMIC_RELAXED),
             (unsigned long long) __atomic_load_n(&bitnet_t5b_sgemm_calls,
                                                  __ATOMIC_RELAXED),
-            (unsigned long long) __atomic_load_n(&bitnet_t5b_cycles,
-                                                 __ATOMIC_RELAXED));
+            (unsigned long long) bitnet_t5b_cycles_total(),
+            (unsigned long long) bitnet_sgemm_cycles_total(0),
+            (unsigned long long) bitnet_sgemm_cycles_total(1));
 }
 
 static void t5b_register_report(void)

@@ -701,6 +701,38 @@ path costs $1.6\times$ its reference kernel is not established here; the
 dispatch, the accumulator fold and the per-column post-processing are all
 candidates, and isolating them would mean instrumenting the control arm.
 
+**The 1.606 is a weaker number than the table makes it look, and the integration
+now carries the fix.** It is not measured: it is derived from two `llama-bench`
+runs, taken separately on a host whose load ranged from 2 to 10 (4.905 s against
+5.479 s per repetition), so every fluctuation *between* those runs lands entirely
+in the `i2_s` matmul figure. The stated reason for instrumenting only one arm —
+that the control must stay unperturbed — does not survive scrutiny either. The
+integration therefore now probes **both** arms at the same dispatch site in the
+same expression, so the ratio is a quotient of two measured quantities and
+whatever the dispatch itself costs is common to both and divides out.
+
+The probe's cost was measured rather than assumed
+(`src_modifications/bench/bench_probe_cost.c`), and the assumption would have
+been wrong in an instructive way. An `rdtsc` pair alone costs 19 ns and is flat
+in thread count. The same pair with an atomic add to **one shared counter** —
+which is what the original instrumentation used — costs 18.7 ns at one thread
+and 87.6 ns at six, a factor of 4.7, because every `ggml` worker issues a
+read-modify-write to the same cache line and they serialise on the coherence
+protocol. Padding the counter per thread returns it to ~19 ns, flat. Against the
+94.8 µs a single matmul call takes, even the worst case is 0.09% per probe and
+0.18% for the entry/exit pair, so no version of this endangers the measurement;
+but the shared counter's cost *grew along the thread axis §7.4 compares on*, and
+a systematic error that tracks the independent variable is worth removing at any
+size. The counters are per-thread.
+
+**What this does not yet produce is a number.** Running it requires rebuilding
+the patched `llama.cpp` image, which needs a Docker daemon this host does not
+grant. The instrumentation is in `integration/t5b-integration.patch` and in
+`apply_integration.py`, and the three-way consistency of those with each other
+is gated (`tools/check_patch_chain.py`, `check_patch_parity.py`,
+`fix_patch_hunks.py`); the measurement it enables is not claimed here, and the
+1.606 above stands as the derived quantity it is.
+
 **Prompt length.** $1.106$, $1.152$, $1.180$ and $1.113$ at 64, 256, 1024 and
 2048 tokens: the advantage does not decay with length. We had predicted decay
 on the grounds that a prompt pass is arithmetic-bound; at these shapes the

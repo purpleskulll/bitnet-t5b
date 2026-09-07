@@ -707,6 +707,39 @@ established; the dispatch, the accumulator fold and the per-column
 post-processing are candidates, and isolating them would mean instrumenting the
 control arm.
 
+\paragraph{The \num{1.606} is weaker than the table makes it look, and the
+integration now carries the fix.} It is not measured but derived, from two
+\code{llama-bench} runs taken separately on a host whose load ranged from 2 to
+10 (\SI{4.905}{\second} against \SI{5.479}{\second} per repetition), so every
+fluctuation \emph{between} those runs lands entirely in the \code{i2\_s} matmul
+figure. The stated reason for instrumenting only one arm --- that the control
+must stay unperturbed --- does not survive scrutiny either. The integration now
+probes \textbf{both} arms at the same dispatch site in the same expression, so
+the ratio becomes a quotient of two measured quantities and whatever the
+dispatch costs is common to both and divides out.
+
+The probe's cost was measured rather than assumed, and the assumption would have
+been wrong instructively. An \code{rdtsc} pair alone costs \SI{19}{\nano\second}
+and is flat in thread count. The same pair with an atomic add to \emph{one
+shared counter} --- what the original instrumentation used --- costs
+\SI{18.7}{\nano\second} at one thread and \SI{87.6}{\nano\second} at six, a
+factor of \num{4.7}, because every \code{ggml} worker issues a
+read-modify-write to the same cache line and they serialise on the coherence
+protocol. Padding the counter per thread returns it to
+\SI{19}{\nano\second}, flat. Against the \SI{94.8}{\micro\second} a single
+matmul call takes, even the worst case is \SI{0.09}{\percent} per probe and
+\SI{0.18}{\percent} for the entry/exit pair, so no version endangers the
+measurement --- but the shared counter's cost \emph{grew along the thread axis
+this section compares on}, and a systematic error tracking the independent
+variable is worth removing at any size.
+
+\textbf{What this does not yet produce is a number.} Running it requires
+rebuilding the patched \code{llama.cpp} image, which needs a Docker daemon this
+host does not grant. The instrumentation is in the shipped patch and in the
+integration script, and their three-way consistency is gated; the measurement it
+enables is not claimed here, and the \num{1.606} above stands as the derived
+quantity it is.
+
 \paragraph{Prompt length.} $1.106$, $1.152$, $1.180$, $1.113$ at 64, 256, 1024
 and 2048 tokens: the advantage does not decay with length. We had predicted
 decay on the grounds that a prompt pass is arithmetic-bound; at these shapes the
