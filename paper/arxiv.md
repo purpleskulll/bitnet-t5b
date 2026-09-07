@@ -557,13 +557,24 @@ rests on.
 **Code 3.**  Absent: 0 of 2,084,044,800 weights across all 210
 tensors, so (5) holds model-wide.
 
-**A defect in the baseline.**  With activations uniformly at $\pm 127$,
-`llama.cpp`'s `i2_s` AVX2 kernel disagrees with exact arithmetic on
+**A defect in one of the two baselines.**  With activations uniformly at
+$\pm 127$, `llama.cpp`'s `i2_s` *vec\_dot* kernel --- the
+reference of §7.1, not the `llamafile_sgemm` path a real
+run dispatches --- disagrees with exact arithmetic on
 **11,998 of 12,000** rows at $K = 6912$, every discrepancy a
 multiple of $2^{16}$ --- the overflow (13) forbids by construction in
 our kernel. The prediction that overflow needs $n_b = K/128 \ge 32$, i.e.
 $K \ge 4096$, is confirmed on both sides: **0 of 108,000** rows at
 $K = 2560$ wrap under the same activations.
+
+**The shipping path does not have this defect, and reading it is what
+established that.** `tinyBLAS_I2S_AVX` folds `int16` into
+`int32` once per 128-weight block, inside its block loop, where the
+reference kernel accumulates 32 blocks first (`group32_num = nb / 32`).
+There is therefore no 32-block group to overflow on the path that runs, and the
+finding above is a statement about the reference kernel alone. An earlier
+version of this paragraph said ```llama.cpp`'s `i2_s` AVX2 kernel''
+without distinguishing the two, which reads as the stronger claim.
 
 The two exceptions are the bound speaking, not noise, and they change how the
 claim must be phrased. The margin is $256 \times 127 = 32,512$ against
@@ -719,11 +730,19 @@ call would be the call. Five runs:
 | post-processing | 3.1% |
 | dispatch (by difference) | 2.5% |
 
-**Two of the three candidates are ruled out.** The cost is the inner loop's
-own arithmetic and memory traffic, not overhead around it, so the 1.257
-is a statement about the kernel rather than about `ggml`'s dispatch. The
-third candidate, the 32-block accumulator fold, lies *inside* the
-contraction and these two probes do not separate it.
+**All three candidates are now answered.** Dispatch and post-processing
+together are 5.6%, so neither carries the difference: the
+1.257 is a statement about the inner loop's own arithmetic and memory
+traffic. The third, the accumulator fold, is answered by reading the kernel
+rather than by a third probe --- `tinyBLAS_I2S_AVX` has *no*
+32-block fold. It folds `int16` into `int32` once per 128-weight
+block, inside its block loop. So the fold is not a periodic cost that
+occasionally interrupts the contraction; it is part of every block, and it is
+inside the 94.4%.
+
+That also settles which of the two `i2_s` implementations the overflow of
+§7.1 belongs to. The reference kernel accumulates 32 blocks
+before folding and overflows; the path that runs folds every block and cannot.
 
 These probes are compiled out by default, and that is not tidiness. They fire
 once per $\mathit{RM} \times \mathit{RN}$ tile rather than once per call, and
