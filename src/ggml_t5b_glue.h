@@ -166,7 +166,12 @@ uint64_t bitnet_t5b_cycles_total(void);
  * 94.8 us a single matmul call takes. */
 uint64_t bitnet_probe_tsc(void);
 void     bitnet_sgemm_cycles_add(int is_t5b, uint64_t t0);
-uint64_t bitnet_sgemm_cycles_total(int is_t5b); /* the llamafile path         */
+uint64_t bitnet_sgemm_cycles_total(int is_t5b);
+
+/* Phase split inside llama.cpp's i2_s kernel: 0 = contraction, 1 = per-column
+ * post-processing. Dispatch is what remains of the dispatch-site total. */
+void     bitnet_i2s_phase_add(int phase, uint64_t cycles);
+uint64_t bitnet_i2s_phase_total(int phase); /* the llamafile path         */
 void bitnet_t5b_report(void);
 
 #ifdef __cplusplus

@@ -64,9 +64,25 @@ run() {   # run <model> -> "cycles_i2s cycles_t5b tokens_per_second"
     # lands in the output as a cycle count, which is how this first reported
     # "2" cycles for a run that took twenty seconds.
     ci="$(sed -n 's/.*sgemm_cycles_i2s=\([0-9]*\).*/\1/p' <<< "$out" | tail -1)"
+    PH_CONTRACT="$(sed -n 's/.*i2s_contract=\([0-9]*\).*/\1/p' <<< "$out" | tail -1)"
+    PH_POST="$(sed -n 's/.*i2s_postproc=\([0-9]*\).*/\1/p' <<< "$out" | tail -1)"
     ct="$(sed -n 's/.*sgemm_cycles_t5b=\([0-9]*\).*/\1/p' <<< "$out" | tail -1)"
     ts="$(sed -n 's/.*|  *\([0-9][0-9.]*\) ± .*/\1/p' <<< "$out" | tail -1)"
     echo "${ci:-0} ${ct:-0} ${ts:-0}"
+}
+
+# Where the i2_s time goes, which the dispatch-site probe alone cannot say.
+# Contraction and post-processing are probed; DISPATCH is what remains when
+# both are subtracted from the dispatch-site total, because a probe around the
+# call would be the call.
+phase_line() {
+    awk -v tot="$1" -v con="$2" -v post="$3" 'BEGIN{
+        if (tot <= 0) { print "    (no i2_s cycles recorded)"; exit }
+        d = tot - con - post
+        printf "    contraction     %14.0f  %5.1f %%\n", con,  100*con/tot
+        printf "    post-processing %14.0f  %5.1f %%\n", post, 100*post/tot
+        printf "    dispatch (rest) %14.0f  %5.1f %%\n", d,    100*d/tot
+    }'
 }
 
 echo "=================================================================="
@@ -118,6 +134,17 @@ awk -v n="$ROUNDS" '
         printf "\n  mean matmul time per token, wall clock:\n"
         printf "    i2_s   %6.2f ms      t5b   %6.2f ms\n", sa/n, sb/n
     }' "$TMP"
+echo
+if [ -n "${PH_CONTRACT:-}" ] && [ "${PH_CONTRACT:-0}" -gt 0 ]; then
+    echo
+    echo "  WHERE THE i2_s TIME GOES (last round):"
+    phase_line "$a_i2s" "$PH_CONTRACT" "$PH_POST"
+    echo
+    echo "  §7.4 named three candidates for the i2_s path's cost -- dispatch,"
+    echo "  the accumulator fold, and the per-column post-processing -- and could"
+    echo "  not separate them, because one probe at one site yields one number."
+    echo "  Two more inside tinyBLAS_I2S_AVX do separate them."
+fi
 echo
 echo "  READ: §7.4 previously DERIVED these two matmul times by differencing"
 echo "  two separate llama-bench runs, and reported 21.18 ms for i2_s against"

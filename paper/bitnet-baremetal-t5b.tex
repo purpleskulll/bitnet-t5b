@@ -774,11 +774,39 @@ rounds. What the objection bought is not a corrected number but a number that no
 longer rests on the assumption that everything outside the matmuls costs the
 same in both arms.
 
-Two things this still does not settle. It does not decompose the
-\code{i2\_s} path into dispatch, accumulator fold and per-column
-post-processing --- one probe at one site yields one number, and separating the
-three would need probes inside \code{tinyBLAS\_I2S\_AVX}. And it is one host:
-the same shared machine as everything else in \S\ref{sec:results}.
+\paragraph{Where that time goes.} Two further probes inside
+\code{tinyBLAS\_I2S\_AVX}, one around the contraction loop and one around the
+per-column post-processing, separate what the dispatch-site probe cannot.
+Dispatch is the remainder, measured by difference, because a probe around the
+call would be the call. Five runs:
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+part of the \code{i2\_s} matmul & share \\
+\midrule
+contraction loop        & \SI{94.4}{\percent} \\
+post-processing         & \SI{3.1}{\percent} \\
+dispatch (by difference) & \SI{2.5}{\percent} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Two of the three candidates are ruled out.} The cost is the inner loop's
+own arithmetic and memory traffic, not overhead around it, so the \num{1.257}
+is a statement about the kernel rather than about \code{ggml}'s dispatch. The
+third candidate, the 32-block accumulator fold, lies \emph{inside} the
+contraction and these two probes do not separate it.
+
+These probes are compiled out by default, and that is not tidiness. They fire
+once per $\mathit{RM} \times \mathit{RN}$ tile rather than once per call, and
+they instrument one arm only, so leaving them in inflates the \code{i2\_s} side
+of the ratio --- measured at \num{1.379} against \num{1.257} on the same host, a
+\SI{10}{\percent} artefact of the instrument. The decomposition and the ratio
+come from two builds by design.
+
+One thing this still does not settle: it is one host, the same shared machine as
+everything else in \S\ref{sec:results}.
 
 \paragraph{Prompt length.} $1.106$, $1.152$, $1.180$, $1.113$ at 64, 256, 1024
 and 2048 tokens: the advantage does not decay with length. We had predicted

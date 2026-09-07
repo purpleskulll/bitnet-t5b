@@ -139,6 +139,29 @@ void bitnet_sgemm_cycles_add(int is_t5b, uint64_t t0)
                        t5b_rdtsc() - t0, __ATOMIC_RELAXED);
 }
 
+/* Phase counters INSIDE llama.cpp's i2_s kernel. The dispatch-site probe says
+ * that path costs 1.257x t5b's; it cannot say WHICH part does, because one
+ * probe at one site yields one number. Two more, around the contraction loop
+ * and around the per-column post-processing, split it -- and what is left over
+ * when both are subtracted from the dispatch-site total is the dispatch
+ * itself, which is therefore measured by difference rather than probed, since
+ * a probe around the call is the call. */
+static struct t5b_counter g_i2s_phase[2][T5B_MAX_THREADS];
+
+void bitnet_i2s_phase_add(int phase, uint64_t cycles)
+{
+    __atomic_fetch_add(&g_i2s_phase[phase ? 1 : 0][t5b_my_slot()].v,
+                       cycles, __ATOMIC_RELAXED);
+}
+
+uint64_t bitnet_i2s_phase_total(int phase)
+{
+    uint64_t s = 0;
+    for (int i = 0; i < T5B_MAX_THREADS; ++i)
+        s += __atomic_load_n(&g_i2s_phase[phase ? 1 : 0][i].v, __ATOMIC_RELAXED);
+    return s;
+}
+
 uint64_t bitnet_sgemm_cycles_total(int is_t5b)
 {
     uint64_t s = 0;
@@ -173,14 +196,17 @@ void bitnet_t5b_report(void)
 {
     fprintf(stderr,
             "[bitnet-t5b] type=43 bits/weight=1.600 calls=%llu sgemm=%llu "
-            "matmul_cycles=%llu sgemm_cycles_i2s=%llu sgemm_cycles_t5b=%llu\n",
+            "matmul_cycles=%llu sgemm_cycles_i2s=%llu sgemm_cycles_t5b=%llu "
+            "i2s_contract=%llu i2s_postproc=%llu\n",
             (unsigned long long) __atomic_load_n(&bitnet_t5b_calls,
                                                  __ATOMIC_RELAXED),
             (unsigned long long) __atomic_load_n(&bitnet_t5b_sgemm_calls,
                                                  __ATOMIC_RELAXED),
             (unsigned long long) bitnet_t5b_cycles_total(),
             (unsigned long long) bitnet_sgemm_cycles_total(0),
-            (unsigned long long) bitnet_sgemm_cycles_total(1));
+            (unsigned long long) bitnet_sgemm_cycles_total(1),
+            (unsigned long long) bitnet_i2s_phase_total(0),
+            (unsigned long long) bitnet_i2s_phase_total(1));
 }
 
 static void t5b_register_report(void)
