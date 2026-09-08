@@ -251,10 +251,21 @@ static inline __m256i t5b_block(__m256i acc, const uint8_t *wp, const int8_t *a)
                            _mm256_slli_epi16(_mm256_mulhi_epu16(xo, m4), 8));
 
     /* d_k = x_k - 3*x_{k+1}, with x_5 = 0 so d4 = x4, now on bytes. vpsubb and
-     * not vpsubw: every digit is in 0..2 for every one of the 256 possible byte
-     * values -- verified exhaustively, including the foreign bytes above 242
-     * the header's second precondition covers -- so no lane ever borrows, and
-     * the byte-width subtract makes that structural rather than incidental.
+     * not vpsubw: no digit subtraction ever borrows, for any of the 256
+     * possible byte values -- verified exhaustively, including the foreign
+     * bytes above 242 the header's second precondition covers -- so no lane
+     * carries out of its byte and the byte-width subtract makes that
+     * structural rather than incidental.
+     *
+     * NOT "every digit is in 0..2 for all 256 bytes", which an earlier revision
+     * of this comment claimed and which is false: 243..255 give d4 = 3, since
+     * floor(x/81) = 3 there. The header says so correctly and this line
+     * contradicted it. The distinction is load-bearing rather than pedantic,
+     * because the digit range is exactly what the accumulator bound rests on --
+     * 2 * 128 * 2 = 512 per plane -- so `d <= 2` is a consequence of the <= 242
+     * precondition, not something the decode guarantees on its own. Borrow-
+     * freedom IS unconditional over the whole domain, and it is all vpsubb
+     * needs.
      *
      * Emitted high digit first: q4 is read by planes 4 and 3 and is dead after
      * the second, q3 by planes 3 and 2, and so on, so each quotient dies one

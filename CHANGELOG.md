@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Eight claims in earlier drafts of the paper were wrong and were corrected before
+Nine claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -63,6 +63,24 @@ it was given. `benchmarks/bench_vnni.c` writes the instruction and verifies at
 run time that its own binary contains it; §9.2 is the resulting measurement.
 *Found by a reviewer with `objdump`.*
 
+**9. "Every digit is in 0..2 for every one of the 256 possible byte values —
+verified exhaustively."**
+False, and the same file's header said so correctly eleven lines apart: the
+thirteen bytes $243\ldots255$ all decode to $d_4=3$, because
+$\lfloor x/81\rfloor = 3$ there. The claim mattered because the digit range is
+what the accumulator bound rests on — $2\cdot128\cdot2=512$ per plane — so
+$d\le2$ is a consequence of the $x\le242$ precondition and not something the
+decode enforces. A block of foreign bytes bounds a lane at
+$2\cdot128\cdot11=2816$ and twelve of them overflow `int16`. The property
+`vpsubb` actually needs is weaker and *is* unconditional: no digit subtraction
+borrows, for any of the 256 values. Corrected in `src/ternary_t5b.{c,h}` and
+§4.3; the header's foreign-byte figure of 2794 was recomputed as 2816, having
+been taken at $|a|\le127$ while the derivation eighteen lines above it takes
+128.
+*Found by re-deriving the decode independently while checking an unrelated
+proposal — not by any check in this repository, and no check here would have
+caught it: the kernel is correct, and it was the justification that was wrong.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -77,9 +95,27 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_patch_parity.py` | the shipped patch describes the same change as the script |
 | `tools/fix_patch_hunks.py --check` | the patch's `@@` counts match its content |
 | `tools/check_buildable.py` | every shipped source is named by a build rule |
+| `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is eight and was called seven until this list was written out: items 2
+The count is nine. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
-under-reporting.
+under-reporting — and nine only after item 9, which none of the checks above
+could have found at the time. Every check that existed then tested a claim
+against another artefact: the `.md` against the `.tex`, a path against the tree,
+a hunk against its anchor. Item 9 was a claim about arithmetic that no artefact
+in the repository disagreed with — the file's own header contradicted it, eleven
+lines away, and no comparison in this list reads comments — so it took
+re-deriving the arithmetic to see it. `check_decode_claims.py` is that
+re-derivation, added with item 9 and listed above; it is the only entry in the
+table that evaluates a property rather than comparing two texts.
+
+Its first negative control did not fire, which is worth recording because the
+reason is not carelessness. The control perturbed the $/81$ multiplier 811 to
+810 on the belief that the mutation suite had proved those equivalent only on
+$x\le242$; sweeping the constants shows 810, 811 and 812 are all exact over the
+whole 256-byte domain, so the mutant is equivalent everywhere and no sweep of
+the domain can catch it. The controls that replaced it were chosen by sweeping
+rather than by reasoning about them, and one of them independently reproduces
+the paper's own claim that 813 first fails at $x=242$.

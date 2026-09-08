@@ -140,10 +140,19 @@
  * has the same sign. The saturation in vpmaddubsw never engages either, for
  * the same reason: 512 is nowhere near the int16 clamp.
  *
- * Note that 2560 is the bound for bytes this packer produced. A foreign byte
- * of 255 decodes to d4 = 3 (see the preconditions), which lifts the per-block
- * bound to 2794 and, at 12 blocks, past 32767 -- one more consequence of the
- * <= 242 precondition rather than a separate hazard.
+ * Note that 2560 is the bound for bytes this packer produced, and that the
+ * `code <= 2` in it is a consequence of the <= 242 precondition rather than a
+ * property of a byte. Exactly 13 byte values decode outside {0,1,2}: 243..255
+ * all give d4 = 3, because floor(x/81) = 3 there. The per-plane maxima over the
+ * whole 256-byte domain are (2,2,2,2,3), so a block of foreign bytes bounds a
+ * lane at 2 * 128 * (2+2+2+2+3) = 2816, and 12 * 2816 = 33792 > 32767. The
+ * fold would overflow. This is one more consequence of the <= 242 precondition
+ * rather than a separate hazard.
+ *
+ * (An earlier revision put that figure at 2794, which is the same count taken
+ * at |a| <= 127 while the derivation above takes 128. The conclusion is
+ * unchanged -- 12 * 2794 = 33528 also exceeds 32767 -- but the two numbers were
+ * computed under different conventions eighteen lines apart.)
  *
  * Correction
  * ----------

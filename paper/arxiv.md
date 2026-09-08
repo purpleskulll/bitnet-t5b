@@ -341,7 +341,13 @@ Digits then follow from (10) using shifts and subtractions
 ## 4.2 Contraction and the accumulator bound
 
 Digit plane $k$ is a register of 32 bytes in $\{0,1,2\}$, exactly the unsigned
-operand `vpmaddubsw` expects:
+operand `vpmaddubsw` expects. That range is a consequence of
+(7) and not a property the decode enforces: the thirteen byte
+values $243\ldots255$, which no packer of this format emits, all yield $d_4=3$,
+and a block of them would bound a lane at $2\cdot128\cdot11=2816$, which
+the twelve-block fold derived below does not survive. What the subtraction needs is
+weaker and does hold unconditionally --- no digit subtraction borrows for any of
+the 256 byte values.
 
 $$
 \text{acc}_{16}\mathrel{+}=\texttt{vpmaddubsw}\!\left(d_{k},\,a_{32k..32k+31}\right).
