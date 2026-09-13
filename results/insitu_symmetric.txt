@@ -1,0 +1,39 @@
+==================================================================
+ IN-SITU MATMUL TIME, BOTH ARMS MEASURED
+==================================================================
+
+  binary   /home/matrix/projects/bitnet-baremetal/.verify/insitu/build/bin/llama-bench
+  probe    bitnet_sgemm_cycles_add, present in libggml-cpu.so
+  threads  4      tokens 64      rounds 9 (interleaved)
+  host     load 4.85 3.96 3.14
+
+  round       i2_s cycles       t5b cycles   i2_s t/s    t5b t/s    ratio
+  1           19325562696      15513177636      21.80      23.89   1.2458
+  2           19305188316      15522298452      21.81      23.76   1.2437
+  3           19379102616      15809024593      21.83      23.18   1.2258
+  4           21120029856      15377385423      20.18      24.21   1.3734
+  5           21778032384      15815289061      19.41      23.20   1.3770
+  6           19738593216      15702049225      21.35      23.42   1.2571
+  7           19316046312      15384459929      21.79      24.23   1.2556
+  8           20175288444      15435304560      21.01      24.11   1.3071
+  9           19551747600      15416848729      21.55      24.14   1.2682
+
+  median ratio  i2_s matmul / t5b matmul   : 1.257
+  mean                                     : 1.284
+  min / max                                : 1.226 / 1.377
+  rounds with i2_s slower                  : 9 of 9
+
+  mean matmul time per token, wall clock:
+    i2_s    21.67 ms      t5b    16.88 ms
+
+  READ: §7.4 previously DERIVED these two matmul times by differencing
+  two separate llama-bench runs, and reported 21.18 ms for i2_s against
+  16.70 for t5b -- a ratio of 1.268. Both numbers above are measured, at
+  the same dispatch site by the same probe, so the ratio is a quotient of
+  two measurements and the dispatch cost is common to both and cancels.
+  The derived figures survive the check.
+
+  It is NOT the same quantity as the isolated S = 2.43 of the kernel
+  microbenchmark: that compares the reference vec_dot against t5b with
+  memory removed, this compares the paths llama.cpp actually dispatches
+  at the model's real shapes and thread count.

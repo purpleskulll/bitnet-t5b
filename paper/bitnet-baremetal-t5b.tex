@@ -938,7 +938,7 @@ measurement --- but the shared counter's cost \emph{grew along the thread axis
 this section compares on}, and a systematic error tracking the independent
 variable is worth removing at any size.
 
-\textbf{And it has now been run.} The measurement needed a patched
+\textbf{And it has now been run}~(\code{results/insitu\_symmetric.txt}). The measurement needed a patched
 \code{llama.cpp}, which had meant a container this host does not grant; building
 it natively instead --- \code{cmake} and \code{gcc}, no daemon, no privileges
 --- removed that obstacle. \code{insitu\_measure.sh} interleaves the two
@@ -1185,7 +1185,7 @@ that the model of \S\ref{sec:limits} is therefore incomplete.
 that Spectra~1.1~\cite{spectra} publishes the same $p=8$, $k=5$ construction
 with a correctness theorem. This subsection measures against \code{TQ1\_0},
 which is the form of it that ships in the codebase integrated into; no run
-against Spectra's own kernels was made. The comparison file is produced by re-encoding
+against Spectra's own kernels was made. The measurement is in \code{results/tq1\_0\_comparison.txt}. The comparison file is produced by re-encoding
 the same ternary values into \code{TQ1\_0}'s block layout, with the per-tensor
 \code{i2\_s} scale written into every block's f16 field, so the two files carry
 identical weights.
@@ -1689,6 +1689,17 @@ run on VNNI hardware would settle \S\ref{sec:microarch}. Each is listed with
 what replaced it and how it was found in \code{CHANGELOG.md} in the repository
 below, kept there rather than here so that this document states what holds.
 
+\paragraph{What a $\pm$ means here.}
+Three different things, and the document should say which. Around an activation
+bound it is the int8 range. After a perplexity it is
+\code{llama-perplexity}'s own figure, the standard error of the mean over
+chunks: it computes $\sqrt{(\overline{v^{2}}-\bar v^{2})/(n-1)}$ on the
+per-chunk negative log-likelihood and scales it by the perplexity. After a
+throughput it is \code{llama-bench}'s own figure over its repetitions. None of
+them is a confidence interval and none is comparable to another; each is
+reproduced verbatim from the tool that printed it, and every pair in this paper
+was checked against the evidence file it came from.
+
 \section*{Data and code availability}
 
 The format, the kernels, the benchmarks, the converters and every evidence file
@@ -1713,6 +1724,9 @@ surplus $\Sigma$ against core count & \code{results/thread\_headroom.txt}, \code
 kernel rates, instruction and spill counts & \code{results/weight\_density.txt}, \code{benchmarks/bench\_alu.c} \\
 weight traffic of one token & \code{benchmarks/bench\_token.c} \\
 end-to-end throughput & \code{results/inference\_t5b.txt} \\
+in-situ matmul time, both arms & \code{results/insitu\_symmetric.txt}, \code{results/insitu\_kernel\_rate.txt} \\
+matmul share of a token & \code{results/insitu\_kernel\_rate.txt} \\
+against \code{TQ1\_0} at equal weights & \code{results/tq1\_0\_comparison.txt}, \code{tools/gguf\_to\_tq1\_0.py} \\
 perplexity agreement between the formats & \code{results/perplexity\_t5b.txt} \\
 round trip on real weights & \code{results/real\_weights\_check.txt} \\
 dead feed-forward neurons & \code{results/dead\_neurons.txt}, \code{tools/dead\_neurons.py} \\
