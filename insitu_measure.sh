@@ -30,6 +30,19 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Runs UNCHANGED in both trees, and locating beats assuming. In the private tree
+# this file sits in scripts/, so `..` is the repository root; in the public tree
+# it is copied to the ROOT, so `..` is the clone's PARENT and every path below
+# resolves outside the repository. That is not hypothetical: a cold-clone audit
+# found this script exiting without measuring anything, while the paper's own
+# footnote names it as the reproduction path for a whole subsection -- the exact
+# failure ("someone looks for the gate, cannot find it, and then doubts
+# everything else") this project has a rule about.
+if [ ! -d "$ROOT/src_modifications" ] && [ ! -d "$ROOT/src" ] \
+   && [ -d "$(dirname "${BASH_SOURCE[0]}")/src" ]; then
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 BENCH="$ROOT/.verify/insitu/build/bin/llama-bench"
 M_I2S="$ROOT/models/ggml-model-i2_s.gguf"
 M_T5B="$ROOT/models/ggml-model-t5b.gguf"

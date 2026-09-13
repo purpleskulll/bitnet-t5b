@@ -1413,9 +1413,10 @@ reflect a tokenisation artefact as the model.
 The second we found while auditing this work, and it is not a suspicion but a
 measurement: the graph `llama.cpp` builds for this architecture is not the
 model's. `build_ffn` is called with `LLM_FFN_SILU` in
-`src/models/bitnet.cpp`, whereas the reference implementation released with
-the checkpoint applies a squared rectifier ---
-`inner = self.ffn_sub_norm(squared_relu(x1) * x3)`. The file does not
+`src/models/bitnet.cpp`, whereas the checkpoint's own `config.json`
+declares `"hidden_act": "relu2"` and its technical
+report [bitnet2b4t] states that ``instead of the commonly used SwiGLU
+activation \dots{} BitNet b1.58 2B4T employs squared ReLU''. The GGUF does not
 settle it: it declares `general.architecture = bitnet-b1.58` and carries no
 activation key at all, so the per-architecture default in the loader is the only
 thing choosing, and `LLM_FFN_RELU_SQR` exists beside it in
