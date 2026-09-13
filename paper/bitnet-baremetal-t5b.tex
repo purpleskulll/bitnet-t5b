@@ -1483,12 +1483,28 @@ patterns is a large sample of a space that is not finite.
 \paragraph{Task benchmarks.} None. The format question does not admit one ---
 output is bit-identical --- and where this \emph{model} stands against
 others is a different question this paper does not address. We ran a cross-model
-perplexity comparison and do not report it as a result: the checkpoint's GGUF
-requires \code{tokenizer.ggml.pre} and the EOS id to be supplied through
-\code{-{}-override-kv} because its own metadata is wrong, so an absolute
-perplexity from it is at least as likely to reflect a tokenisation artefact as
-the model. It does not affect the identity result, where both arms are affected
+perplexity comparison and do not report it as a result, for two reasons, both of
+which leave the identity result untouched because both arms are affected
 equally.
+
+The first is metadata: the checkpoint's GGUF requires \code{tokenizer.ggml.pre}
+and the EOS id to be supplied through \code{-{}-override-kv} because its own
+metadata is wrong, so an absolute perplexity from it is at least as likely to
+reflect a tokenisation artefact as the model.
+
+The second we found while auditing this work and state because it is concrete:
+the graph \code{llama.cpp} builds for this architecture is probably not the
+model's. \code{build\_ffn} is called with \code{LLM\_FFN\_SILU} in
+\code{src/models/bitnet.cpp}, whereas the reference implementation released with
+the checkpoint applies a squared rectifier ---
+\code{inner = self.ffn\_sub\_norm(squared\_relu(x1) * x3)}. The file does not
+settle it: it declares \code{general.architecture = bitnet-b1.58} and carries no
+activation key at all, so the per-architecture default in the loader is the only
+thing choosing, and \code{LLM\_FFN\_RELU\_SQR} exists beside it in
+\code{src/llama-graph.h} and is used by five other architectures. We have not
+rebuilt with it and therefore do not claim which activation the quoted
+\num{96.8243} reflects; we claim only that the number has two independent
+reasons to be untrustworthy and that neither reaches the comparison.
 
 \paragraph{Engineering.} The blocked matrix--matrix kernel spills 181 times per
 loop at its chosen width; narrower widths spill less and measure slower. The

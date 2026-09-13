@@ -47,6 +47,7 @@ PAPERS = [ROOT / "paper/arxiv.md", ROOT / "paper/bitnet-baremetal-t5b.tex"]
 # actually lives. Adding a line here asserts that; it does not excuse a typo.
 EXTERNAL = {
     "src/models/bitnet.cpp":     "upstream llama.cpp, patched by the integration",
+    "src/llama-graph.h":    "upstream llama.cpp, inside the image",
     "ggml/src/ggml-cpu/quants.c": "upstream ggml",
     "arch/x86/quants.c":         "upstream ggml, arch-specific TQ1_0 kernel",
     "arch/arm/quants.c":         "upstream ggml, arch-specific TQ1_0 kernel",
