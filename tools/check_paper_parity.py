@@ -182,7 +182,13 @@ def check_correction_count() -> list:
     for doc in (TEX, MD):
         if not doc.exists():
             continue
-        m = re.search(r"\b([A-Za-z]+) claims in earlier drafts", doc.read_text())
+        # Hyphens belong to the numeral: \b splits "Twenty-one" and the first
+        # version of this read the "one" out of it and reported the paper as
+        # saying 1 against the CHANGELOG's 21. Same class of parser defect as
+        # the fifteen-word limit above, found the same way -- by the count
+        # reaching a value the parser had not anticipated.
+        m = re.search(r"([A-Za-z]+(?:-[a-z]+)?) claims in earlier drafts",
+                      doc.read_text())
         if not m:
             bad.append(f"{doc.name}: no 'N claims in earlier drafts' sentence")
             continue

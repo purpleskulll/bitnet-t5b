@@ -1085,16 +1085,25 @@ it explains are not assembled from different runs or different arms. Per token:
 | `i2_s` | 42.80 ms | 21.18 ms | 49.5% | 21.6 ms |
 | **t5b** | **38.32 ms** | **16.70 ms** | 43.6% | 21.6 ms |
 
-The last column is one quantity rather than two --- attention, the KV cache,
-RoPE, the norms, the activation quantisation, thread barriers and graph
-overhead, none of which touches the weight format --- and it is identical
-between the arms, which is what makes the decomposition testable rather than
-decorative. Matmuls are 49.5% of a *baseline* token; t5b
-removes 21.1% of them, which is 4.48 ms, which is
-10.5% of the baseline token, which predicts $1.117$ end to
-end. The same run's wall clock gives $5.479/4.905=1.117$. The
-decomposition reproduces the ratio it is supposed to explain to
-0.02%.
+**That table is a budget, not evidence, and an earlier draft of this
+paragraph presented it as evidence.** Only the t5b arm carries the counter;
+`i2_s`'s matmul time is *defined* as its wall clock minus the
+non-matmul time measured in the other arm. The last column is therefore
+identical between the arms by construction, and the ``prediction'' that
+49.5% of a baseline token, reduced by 21.1%,
+gives $1.117$ end to end is the identity
+$T_{A}/\bigl(T_{A}-(M_{A}-M_{B})\bigr)=T_{A}/T_{B}$ --- it reproduces the
+measured ratio exactly, for any inputs, and cannot disagree with it. Quoting
+that agreement as a cross-check was a check that could not fail.
+
+The matmul ratio *is* measured, elsewhere and on both arms: the symmetric
+probe of §7.4 times `i2_s` and t5b at the same dispatch
+site over nine interleaved rounds and gives a median of $1.257$, with
+`i2_s` slower in 9 of 9 (`results/insitu_symmetric.txt`). The
+budget above is worth keeping for what it does show --- that the untouched
+21.6 ms is the larger half of a token, so a format acting on
+the smaller half cannot do better than it does --- and not for a corroboration
+it cannot supply.
 
 Two figures in that chain deserve their arm stated, because taking the wrong one
 is the mistake this paragraph previously made. 43.6% is the matmul
@@ -1692,7 +1701,7 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Twenty claims in earlier drafts of this paper were wrong and were corrected
+Twenty-one claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a

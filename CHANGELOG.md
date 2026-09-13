@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Twenty claims in earlier drafts of the paper were wrong and were corrected before
+Twenty-one claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -293,6 +293,35 @@ option was never stated to be off by default, while every figure elsewhere
 assumes it is. All three now say in the paper what the file behind them already
 said.
 
+**21. The token budget was presented as a cross-check, and it is an identity.**
+The paragraph written to fix correction #4 claimed that the decomposition
+"predicts 1.117 end to end" and that "the same run's wall clock gives 1.117 —
+agreement to 0.02 %". Only the packed arm carries a counter;
+`results/insitu_kernel_rate.txt` says so in its own header — i2_s "has no
+counter and is obtained by difference". With the non-matmul time defined from
+one arm and the baseline's matmul time defined as its wall clock minus that, the
+prediction collapses to
+
+    T_A / (T_A − (M_A − M_B))  =  T_A / T_B
+
+which is the measured ratio, for any inputs. Computed here the two agree to
+0.00e+00, not 0.02 % — the 0.02 % was rounding. It could not have disagreed.
+
+This is the failure this project has a name for: a check that cannot fail. It
+was introduced today, in the commit that fixed a different defect in the same
+paragraph, and it survived a rebuild and seven green gates because no gate
+reads algebra.
+
+Both papers now call the table a budget, keep it for what it does show — the
+untouched 21.6 ms is the larger half of a token, which bounds what a format
+acting on the smaller half can do — and report the matmul ratio from the
+measurement that is real: nine interleaved rounds, both arms probed at one
+dispatch site, median 1.257, baseline slower in 9 of 9.
+
+*Found by a referee sent to read the four-page submission cold. It also caught
+that the same paragraph's "independent instrument" was being compared against
+the derived number rather than the measured one.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -311,7 +340,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_short_parity.py` | the six-page submission carries no figure the long paper lacks |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is twenty. It was called seven until this list was written out — items 2
+The count is twenty-one. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above
