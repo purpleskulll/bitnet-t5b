@@ -904,6 +904,65 @@ $C=1$, so tiling rows buys no reuse and merely reorders loads. Upstream draws
 the same line structurally: its \code{ggml\_gemv\_i2\_i8\_s} does not tile,
 while the $4\times 4$ tile lives in \code{ggml\_gemm\_i2\_i8\_s}.
 
+\subsection{A cheaper decode, and the width at which it stops
+mattering}\label{sec:shufdig}
+Because $q_3=\lfloor x/27\rfloor\le 9$ for every byte, it is a nibble, and
+\code{vpshufb} can index it. Three constant 16-entry tables then yield
+$d_4=\lfloor q_3/3\rfloor$, $d_3=q_3\bmod 3$ and $3q_3$ from $q_3$ alone, so the
+multiplier $M_4=\num{811}$ and both of its \code{vpmulhuw} disappear. The packed
+representation is untouched --- same five digits, same \num{1.60755}
+bits/weight, same bytes --- so the variant is a build option
+(\code{-DTERNARY\_T5B\_SHUFDIG}) and not a second format. It is bit-identical:
+the full suite of \num{97529} assertions passes against it, and the two decoders
+agree on all 256 byte values including the thirteen foreign ones.
+
+Under the build's own flags the loop falls from 43 to 37 vector operations and
+from 13 to 11 multiply-port operations.\footnote{The count depends on
+\code{-march=native}, which the \code{Makefile} sets: without it the same source
+gives 42 and 36. The \num{0.2625} vector operations per weight quoted in
+\S\ref{sec:limits} is the latter count.} Fifteen interleaved rounds, with the
+untouched \code{i2\_s} kernel measured in the same binaries as a control, give a
+median of $\num{1.2254}\times$ on the contraction, faster in 14 of 15 rounds,
+\footnote{\code{shufdig\_ab.sh} reproduces every figure in this subsection. It
+compiles both arms from the one file, asserts that the arm without the
+definition is byte-identical to the shipped kernel, chooses its core by sampling
+\code{/proc/stat} rather than by convention --- a busy SMT sibling costs as much
+as a busy core --- and prints the control beside the effect, so a reader can see
+the noise floor instead of being told it.}
+$p=\num{0.00098}$ by an exact two-sided sign test; the control's median is
+$\num{1.0037}\times$ with a round-to-round range of \SI{5}{\percent}, which is
+this measurement's noise floor. $S$ falls from \num{2.43} to \num{1.98}.
+
+\emph{No cell of the surplus table changes.} \eqref{eq:condition} failed at one
+to four threads and still fails; it held at six and still holds. What changes is
+the margin at the top of that range: the four-thread cell moves from
+\SI{31}{\percent} short to \SI{6.5}{\percent} short. The improvement lands
+exactly where the format was losing and does nothing where it was already
+winning, because at six threads the packed kernel already sits at the memory
+knee and additional arithmetic cannot be spent.
+
+It also does nothing for prompt processing, and the reason is structural rather
+than incidental. \code{ternary\_t5b\_gemm\_avx2} decodes each block once and
+spreads it over $C$ activation columns, so the decode is amortised over the
+strip width. Measured across widths at $K=\num{6912}$, the gain is
+$\num{1.1608}\times$ at $C=1$ and $\num{1.1363}\times$ at $C=4$, both in 9 of 9
+rounds, and by $C=8$ both arms saturate at the same \num{78}~GMAC/s
+with 3 to 5 wins in 9 --- a coin flip. Past that width the cost is the
+contraction and the activation stream, and the decode, which is all this change
+touches, has been amortised away. Only \code{tg128} can move.
+
+Finally, the measurement exceeds what \S\ref{sec:limits}'s own model predicts:
+$43/37=\num{1.1622}$ on total vector operations, $13/11=\num{1.1818}$ on the
+multiply port, against \num{1.2254} measured. The instruction mix shows the
+multiply port falling from 13 to 11 while the shift-and-shuffle pair stays at
+exactly 9 --- three shifts traded for three shuffles --- so the distribution
+across ports flattens, and the loop sustains 2.30 vector operations per cycle
+against the baseline's 2.18. Both loops spill zero times, so register pressure
+is not the mechanism. The flatter distribution is \emph{consistent} with the
+residual \SI{5}{\percent} and is not isolated by this experiment; what the
+experiment does establish is that removing operations is not the only lever, and
+that the model of \S\ref{sec:limits} is therefore incomplete.
+
 \subsection{Against \code{TQ1\_0}, the nearest prior art}\label{sec:tq10}
 
 \S\ref{sec:contrib} records that the base-3 packing is \code{TQ1\_0}'s, and
@@ -1045,7 +1104,7 @@ The honest summary is that \SI{2.9}{\percent} of the ternary payload can be
 removed, that doing so costs four lines and changes the output, and that it
 makes the model no faster. We do not ship it.
 
-\section{Limitations}
+\section{Limitations}\label{sec:limits}
 
 \paragraph{The port analysis is Zen 2 specific --- but $S$ is not.}
 \S\ref{sec:condition} measures one multiply-class port at \num{1.05}

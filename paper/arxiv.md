@@ -832,7 +832,67 @@ $C=1$, so tiling rows buys no reuse and merely reorders loads. Upstream draws
 the same line structurally: its `ggml_gemv_i2_i8_s` does not tile,
 while the $4\times 4$ tile lives in `ggml_gemm_i2_i8_s`.
 
-## 7.7 Against `TQ1_0`, the nearest prior art
+## 7.7 A cheaper decode, and the width at which it stops
+mattering
+
+Because $q_3=\lfloor x/27\rfloor\le 9$ for every byte, it is a nibble, and
+`vpshufb` can index it. Three constant 16-entry tables then yield
+$d_4=\lfloor q_3/3\rfloor$, $d_3=q_3\bmod 3$ and $3q_3$ from $q_3$ alone, so the
+multiplier $M_4=811$ and both of its `vpmulhuw` disappear. The packed
+representation is untouched --- same five digits, same 1.60755
+bits/weight, same bytes --- so the variant is a build option
+(`-DTERNARY_T5B_SHUFDIG`) and not a second format. It is bit-identical:
+the full suite of 97,529 assertions passes against it, and the two decoders
+agree on all 256 byte values including the thirteen foreign ones.
+
+Under the build's own flags the loop falls from 43 to 37 vector operations and
+from 13 to 11 multiply-port operations.\footnote{The count depends on
+`-march=native`, which the `Makefile` sets: without it the same source
+gives 42 and 36. The 0.2625 vector operations per weight quoted in
+§9 is the latter count.} Fifteen interleaved rounds, with the
+untouched `i2_s` kernel measured in the same binaries as a control, give a
+median of $1.2254\times$ on the contraction, faster in 14 of 15 rounds,
+\footnote{`shufdig_ab.sh` reproduces every figure in this subsection. It
+compiles both arms from the one file, asserts that the arm without the
+definition is byte-identical to the shipped kernel, chooses its core by sampling
+`/proc/stat` rather than by convention --- a busy SMT sibling costs as much
+as a busy core --- and prints the control beside the effect, so a reader can see
+the noise floor instead of being told it.}
+$p=0.00098$ by an exact two-sided sign test; the control's median is
+$1.0037\times$ with a round-to-round range of 5%, which is
+this measurement's noise floor. $S$ falls from 2.43 to 1.98.
+
+*No cell of the surplus table changes.* (17) failed at one
+to four threads and still fails; it held at six and still holds. What changes is
+the margin at the top of that range: the four-thread cell moves from
+31% short to 6.5% short. The improvement lands
+exactly where the format was losing and does nothing where it was already
+winning, because at six threads the packed kernel already sits at the memory
+knee and additional arithmetic cannot be spent.
+
+It also does nothing for prompt processing, and the reason is structural rather
+than incidental. `ternary_t5b_gemm_avx2` decodes each block once and
+spreads it over $C$ activation columns, so the decode is amortised over the
+strip width. Measured across widths at $K=6912$, the gain is
+$1.1608\times$ at $C=1$ and $1.1363\times$ at $C=4$, both in 9 of 9
+rounds, and by $C=8$ both arms saturate at the same 78 GMAC/s
+with 3 to 5 wins in 9 --- a coin flip. Past that width the cost is the
+contraction and the activation stream, and the decode, which is all this change
+touches, has been amortised away. Only `tg128` can move.
+
+Finally, the measurement exceeds what §9's own model predicts:
+$43/37=1.1622$ on total vector operations, $13/11=1.1818$ on the
+multiply port, against 1.2254 measured. The instruction mix shows the
+multiply port falling from 13 to 11 while the shift-and-shuffle pair stays at
+exactly 9 --- three shifts traded for three shuffles --- so the distribution
+across ports flattens, and the loop sustains 2.30 vector operations per cycle
+against the baseline's 2.18. Both loops spill zero times, so register pressure
+is not the mechanism. The flatter distribution is *consistent* with the
+residual 5% and is not isolated by this experiment; what the
+experiment does establish is that removing operations is not the only lever, and
+that the model of §9 is therefore incomplete.
+
+## 7.8 Against `TQ1_0`, the nearest prior art
 
 §1.1 records that the base-3 packing is `TQ1_0`'s, and
 that Spectra 1.1 [spectra] publishes the same $p=8$, $k=5$ construction

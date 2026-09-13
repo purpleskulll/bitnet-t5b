@@ -153,6 +153,34 @@ static inline int32_t t5b_hsum_epi32(__m256i v)
  * The second bound is TIGHT -- exactly 255, with zero margin -- which is why it
  * is measured and written down rather than waved at. It holds for a foreign
  * byte too, so this function does not change what the kernel returns for one. */
+/* ---- TERNARY_T5B_SHUFDIG: the same digits, one multiply fewer -------------
+ *
+ * q3 = floor(x/27) is at most 9 for every byte, so it is a NIBBLE and vpshufb
+ * can index it. Three constant tables then give, from q3 alone:
+ *
+ *     TDIV3[q3] = floor(q3/3) = floor(x/81) = d4    (nested floors)
+ *     TMOD3[q3] = q3 mod 3    = d3
+ *     TX3[q3]   = 3*q3                              (for d2 = q2 - 3*q3)
+ *
+ * so the multiplier 811 and both of its vpmulhuw disappear, and the whole q4
+ * register with them. Nothing about the FORMAT changes -- same five base-3
+ * digits per byte, same packed bytes, same 1.60755 bits/weight -- so this is a
+ * build option and not a second type. Measured: 43 -> 37 vector ops, 13 -> 11
+ * multiply-port ops, 1.2254x on the contraction, and bit-identical over all
+ * 256 byte values (results/shufdig_measurement.txt).
+ *
+ * NOT the default. It is faster only where the decode is NOT amortised: at a
+ * strip width of 8 and above the GEMM saturates at the same rate in both arms,
+ * so prompt processing gains nothing, and no cell of the surplus table changes.
+ * The shipped configuration is the one every figure in the paper was measured
+ * on, and this one is here to be measured, not to be assumed. */
+#define T5B_T16(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p) \
+    _mm256_setr_epi8(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p, \
+                     a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p)
+#define T5B_TDIV3  T5B_T16(0,0,0,1,1,1,2,2,2,3, 3, 3, 4, 4, 4, 5)
+#define T5B_TMOD3  T5B_T16(0,1,2,0,1,2,0,1,2,0, 1, 2, 0, 1, 2, 0)
+#define T5B_TX3    T5B_T16(0,3,6,9,12,15,18,21,24,27,30,33,36,39,42,45)
+
 static inline __m256i t5b_triple(__m256i y)
 {
     return _mm256_add_epi16(_mm256_slli_epi16(y, 1), y);
@@ -212,7 +240,9 @@ static inline __m256i t5b_block(__m256i acc, const uint8_t *wp, const int8_t *a)
     const __m256i m1  = _mm256_set1_epi16(21846);   /* floor(x/3),  exact <= 32767 */
     const __m256i m2  = _mm256_set1_epi16(7282);    /* floor(x/9),  exact <= 32767 */
     const __m256i m3  = _mm256_set1_epi16(2428);    /* floor(x/27), exact <= 3292  */
+#ifndef TERNARY_T5B_SHUFDIG
     const __m256i m4  = _mm256_set1_epi16(811);     /* floor(x/81), exact <= 484   */
+#endif
 
     const __m256i x = _mm256_loadu_si256((const __m256i *)wp);
 
@@ -246,9 +276,11 @@ static inline __m256i t5b_block(__m256i acc, const uint8_t *wp, const int8_t *a)
     const __m256i q3 = _mm256_or_si256(
                            _mm256_mulhi_epu16(xe, m3),
                            _mm256_slli_epi16(_mm256_mulhi_epu16(xo, m3), 8));
+#ifndef TERNARY_T5B_SHUFDIG
     const __m256i q4 = _mm256_or_si256(
                            _mm256_mulhi_epu16(xe, m4),
                            _mm256_slli_epi16(_mm256_mulhi_epu16(xo, m4), 8));
+#endif
 
     /* d_k = x_k - 3*x_{k+1}, with x_5 = 0 so d4 = x4, now on bytes. vpsubb and
      * not vpsubw: no digit subtraction ever borrows, for any of the 256
@@ -271,11 +303,20 @@ static inline __m256i t5b_block(__m256i acc, const uint8_t *wp, const int8_t *a)
      * the second, q3 by planes 3 and 2, and so on, so each quotient dies one
      * step after its last use and at most four are ever live. Each plane is
      * contracted the instant it exists and never survives to the next. */
+#ifdef TERNARY_T5B_SHUFDIG
+    acc = t5b_contract(acc, _mm256_shuffle_epi8(T5B_TDIV3, q3),
+                       a + 4 * TERNARY_T5B_BYTES);
+    acc = t5b_contract(acc, _mm256_shuffle_epi8(T5B_TMOD3, q3),
+                       a + 3 * TERNARY_T5B_BYTES);
+    acc = t5b_contract(acc, _mm256_sub_epi8(q2, _mm256_shuffle_epi8(T5B_TX3, q3)),
+                       a + 2 * TERNARY_T5B_BYTES);
+#else
     acc = t5b_contract(acc, q4, a + 4 * TERNARY_T5B_BYTES);
     acc = t5b_contract(acc, _mm256_sub_epi8(q3, t5b_triple(q4)),
                        a + 3 * TERNARY_T5B_BYTES);
     acc = t5b_contract(acc, _mm256_sub_epi8(q2, t5b_triple(q3)),
                        a + 2 * TERNARY_T5B_BYTES);
+#endif
     acc = t5b_contract(acc, _mm256_sub_epi8(q1, t5b_triple(q2)),
                        a + 1 * TERNARY_T5B_BYTES);
     acc = t5b_contract(acc, _mm256_sub_epi8(x,  t5b_triple(q1)),
@@ -684,6 +725,15 @@ t5b_block_nc(__m256i *acc, const uint8_t *wp, const int8_t *a, size_t astride,
     /* Same four magic constants, same exactness bounds, same byte-lane
      * subtraction as t5b_block -- see its comment and the header. The only
      * change is the ORDER in which the quotients are materialised. */
+#ifdef TERNARY_T5B_SHUFDIG
+    const __m256i q3 = t5b_quotient(xe, xo, _mm256_set1_epi16(2428));
+    t5b_spread(acc, _mm256_shuffle_epi8(T5B_TDIV3, q3), a, astride, 4, nc);
+    t5b_spread(acc, _mm256_shuffle_epi8(T5B_TMOD3, q3), a, astride, 3, nc);
+
+    const __m256i q2 = t5b_quotient(xe, xo, _mm256_set1_epi16(7282));
+    t5b_spread(acc, _mm256_sub_epi8(q2, _mm256_shuffle_epi8(T5B_TX3, q3)),
+               a, astride, 2, nc);
+#else
     const __m256i q4 = t5b_quotient(xe, xo, _mm256_set1_epi16(811));
     t5b_spread(acc, q4, a, astride, 4, nc);
 
@@ -692,6 +742,7 @@ t5b_block_nc(__m256i *acc, const uint8_t *wp, const int8_t *a, size_t astride,
 
     const __m256i q2 = t5b_quotient(xe, xo, _mm256_set1_epi16(7282));
     t5b_spread(acc, _mm256_sub_epi8(q2, t5b_triple(q3)), a, astride, 2, nc);
+#endif
 
     const __m256i q1 = t5b_quotient(xe, xo, _mm256_set1_epi16(21846));
     t5b_spread(acc, _mm256_sub_epi8(q1, t5b_triple(q2)), a, astride, 1, nc);

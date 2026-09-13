@@ -36,7 +36,7 @@ I2S_REF   := src/ggml_i2s_ternary.c
 HAVE_I2S  := $(wildcard $(I2S_REF))
 
 TESTS  := $(BIN)/test_t5b $(BIN)/test_t10
-BENCH_ALWAYS := $(BIN)/bench_ports $(BIN)/bench_probe_cost
+BENCH_ALWAYS := $(BIN)/bench_ports $(BIN)/bench_probe_cost $(BIN)/bench_gemm
 BENCH_I2S    := $(BIN)/bench_alu $(BIN)/bench_threads $(BIN)/bench_token
 
 ifeq ($(HAVE_I2S),)
@@ -93,6 +93,12 @@ $(BIN)/bench_ports: benchmarks/bench_ports.c | $(OBJ)
 
 $(BIN)/bench_alu: benchmarks/bench_alu.c $(OBJ)/ggml_i2s_ternary.o \
                   $(OBJ)/ternary_t10.o $(OBJ)/ternary_t5b.o | $(OBJ)
+	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
+
+# The wide path. Needs no i2_s reference, so it builds from a bare clone: it
+# measures t5b's GEMM against itself across strip widths, which is what shows
+# that the cheaper decode stops paying once the strip amortises it.
+$(BIN)/bench_gemm: benchmarks/bench_gemm.c $(OBJ)/ternary_t5b.o | $(OBJ)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDLIBS)
 
 $(BIN)/bench_threads: benchmarks/bench_threads.c $(OBJ)/ggml_i2s_ternary.o | $(OBJ)
