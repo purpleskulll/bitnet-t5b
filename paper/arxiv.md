@@ -116,7 +116,20 @@ a new quantisation scheme, and it composes with all three.
          is not ours: it is `TQ1_0`'s construction in `llama.cpp`, and
          it is published with a correctness theorem by Vaidhya et
          al. [spectra] as Spectra 1.1's `TQ1`, whose $p=8$, $k=5$
-         recommendation and 1.6-bit figure are the same as ours. Ours is the
+         recommendation and 1.6-bit figure are the same as ours. Nor does it
+         originate in this field: Breyer and Korf store heuristic estimates modulo
+         three at 1.6 bits per entry for pattern databases in heuristic
+         search [breyerkorf], fifteen years before ternary language models,
+         and the `5codes` format of *miraculix* publishes the same
+         construction in statistical genomics a year before
+         `TQ1_0` [miraculix] --- its Algorithm 1 writes out the
+         positional weights $3^{0},\dots,3^{4}$, its source defines
+         `BitsPerCode 1.6`, and its stated motivation is the one taken here,
+         to keep the multiplication on the compressed data so that nothing is
+         decompressed. Both decode by table: miraculix precomputes the $3^{5}$
+         possible partial dot products per tile and uses the packed byte directly
+         as the index, so it belongs with the table-lookup systems above rather
+         than with the decode of §4. Ours is the
          scale model --- one per-tensor scale in place of `TQ1_0`'s
          per-256-block f16 and its 16-element two-bit remainder, removing the block
          overhead entirely (1.600 against 1.6875, 20%
@@ -126,19 +139,51 @@ a new quantisation scheme, and it composes with all three.
          multiplication-based decode avoids division and modulo is also known:
          Spectra 1.1 exploits $3^{5}\approx 2^{8}$ to extract the trits
          *iteratively*, $b_{i+1}=(3b_{i})\wedge\texttt{0xFF}$ for
-         $i=0\dots4$, a strictly serial chain of five dependent multiplies. Ours is
-         the observation that a five-trit byte satisfies $x\le242$, so all
-         four quotients $\lfloor x/3^{j}\rfloor$ lie inside the exactness range of
-         16-bit magic multipliers and can be taken **independently, straight
-         from the original byte**, at one `vpmulhuw` each --- collapsing the
-         depth-five dependence to depth one. This costs more multiply-port
-         operations than the serial form and buys latency;
-         §5 gives the condition under which that is the right
-         trade. No head-to-head measurement against Spectra's kernel was made:
-         their figures are from a Mac M4 and an EPYC part, ours from one Zen 2 host.
-3. An explicit profitability condition (§5) derived
-         from (1) and verified by measuring both $\pi$ and $B$
-         rather than inferring either.
+         $i=0\dots4$, a strictly serial chain of five dependent multiplies. The
+         decode used here instead takes all four quotients
+         $\lfloor x/3^{j}\rfloor$ **independently, straight from the original
+         byte**, at one `vpmulhuw` each, which is exact because a five-trit
+         byte satisfies $x\le242$ and so lies inside the exactness range of
+         16-bit magic multipliers --- collapsing the depth-five dependence to depth
+         one.
+
+         **That arithmetic is not ours either, and at exactly these
+         parameters.** The NTRU reference implementation has recovered all five
+         trits of a packed byte since 2019 with four independent multiplies read
+         directly from that byte --- constants 171, 57, 19,
+         203 with shifts 9, 9, 9, 14, which we
+         verified to be exact floor divisions by $3,9,27,81$ over all 256 byte
+         values --- at dependency depth one and without a lookup
+         table [ntru].\footnote{`ref-common/pack3.c`, function
+         `poly_S3_frombytes`. It does contain a serial divide-by-three
+         chain, but only in a leftover tail of at most three coefficients, which is
+         not compiled at all for the `hps4096821` and `hrss701` parameter
+         sets.} We found this only after the fact, and record it here rather than
+         in a footnote, as with the packing above.
+
+         What is left, and what §4 actually claims, is what happens
+         *after* the extraction. NTRU materialises every coefficient into a
+         coefficient array and defers the modulo-three reduction to a separate
+         branch-free sweep; the kernel here recombines the two 16-bit views into
+         byte lanes and feeds the digit planes straight into the
+         `vpmaddubsw` contraction, so that no weight is ever materialised in a
+         register as a value and decompression and computation are one pass. The
+         depth-one extraction costs more multiply-port operations than the serial
+         form and buys latency; §5 gives the condition under
+         which that is the right trade. No head-to-head measurement against
+         Spectra's kernel was made: their figures are from a Mac M4 and an EPYC
+         part, ours from one Zen 2 host.
+3. A *measurement* of the profitability condition
+         (§5), derived from (1) and verified by
+         measuring both $\pi$ and $B$ rather than inferring either. The criterion
+         itself is twenty years old: Equation 1 of Zukowski et
+         al. [zukowski] switches between the I/O-bound and CPU-bound regimes
+         on a test that is $S\le\Sigma$ rearranged, and applies it as an
+         adopt-or-reject rule for a codec. What is new is the level of the
+         hierarchy at which it is measured --- there $B$ is disk bandwidth against
+         a RAID array and main memory is named only as future work, here it is
+         DRAM-to-SIMD --- and the fact that both of its terms are measured on the
+         part in question rather than assumed.
 4. Integration and end-to-end evaluation (§7) in
          `llama.cpp`, with the two-bit path retained as a control and
          losslessness verified by perplexity agreement over
@@ -177,6 +222,23 @@ $$
 The excess zero mass *lowers* the floor below $\log_{2}3$. Storage at
 $\beta=2$ exceeds (4) by 28.2%; the code of
 §3 exceeds it by 2.5%.
+
+That residual 2.5% is the one place an entropy coder could still
+buy something, and the closest work is Tan et al. [shannonllm], which pairs
+an entropy study of weights from 1.5\,B to 405\,B parameters with a tile-level
+Asymmetric Numeral Systems decoder fused into the GEMM pipeline of GPU
+inference, reporting bit rates within 0.01–0.1 bits of the bound.
+It does not settle the question here, and the reason is worth being precise
+about: their format space bottoms out at INT4 and FP4 and treats no ternary
+format, and their central observation --- that nominal formats over-allocate by
+a factor of 2 to 10 --- does not carry over to a code already within
+2.5% of its own measured entropy. The obstacle on this target is
+not the coder's rate but its cost: a variable-rate decoder must still satisfy
+(17) against a kernel sustaining 632 million
+128-weight blocks per second, and their decoder
+reconstructs tiles into shared memory for tensor cores rather than contracting
+without materialising. Whether an interleaved rANS decoder can meet that bound
+on a SIMD CPU is open, and this paper does not answer it.
 
 ## 2.2 The interface a replacement must preserve
 
@@ -427,6 +489,24 @@ $$
 
 in which case it runs a factor $\min(F,\Sigma/S)$ faster. The condition is a
 property of two hardware rates, not of the code, and both are measurable.
+
+**The criterion is not new; the measurement is.**
+Equation 1 of Zukowski et al. [zukowski] selects between an I/O-bound and a
+CPU-bound regime on the test $Br/C + Br/Q \le 1$, which is
+(17) rearranged, with $S=1+Q/C$ the slowdown decode imposes on
+the compute side and $\Sigma=Q/(Br)$ the delivery-to-compute ratio at the
+compressed footprint. That work already uses it as an adopt-or-reject rule,
+solving for a break-even decompression bandwidth of 883 MB/s and rejecting the codecs below it, and its `PFOR` family is
+designed for the same reason this decode is --- no branches and no dependence
+between the values being decompressed, so that decoding pipelines. We claim no
+novelty for the criterion. What differs here is the level of the hierarchy:
+their $B$ is disk bandwidth against a RAID array and they name main memory only
+as future work, whereas both terms below are measured DRAM-to-SIMD on the part
+the kernel runs on. Compression-aware rooflines have since been drawn for
+PDE solvers [goetschel] and, with an area axis rather than a time axis, for
+CPUs with in-core matrix engines [deca]; the thread-dependence of the
+crossover --- that a denser format can fail at one core and pay at six --- is
+likewise a published result in sparse linear algebra [aliaga].
 
 ## 5.1 Measuring $\pi$
 
@@ -836,7 +916,13 @@ while the $4\times 4$ tile lives in `ggml_gemm_i2_i8_s`.
 mattering
 
 Because $q_3=\lfloor x/27\rfloor\le 9$ for every byte, it is a nibble, and
-`vpshufb` can index it. Three constant 16-entry tables then yield
+`vpshufb` can index it. The idiom --- once a quantity is provably below
+sixteen, stop computing it and shuffle it --- is standard and is not claimed
+here [mulapshufb]; what is measured below is a smaller decode, not a new
+technique. It differs from the table-based ternary kernels named in §1 in the way that matters for their published cost: their
+shuffle is rebuilt per activation block and *replaces* the multiply--add,
+whereas these three tables are loop-invariant constants and the
+`vpmaddubsw` contraction is untouched. Three constant 16-entry tables then yield
 $d_4=\lfloor q_3/3\rfloor$, $d_3=q_3\bmod 3$ and $3q_3$ from $q_3$ alone, so the
 multiplier $M_4=811$ and both of its `vpmulhuw` disappear. The packed
 representation is untouched --- same five digits, same 1.60755
@@ -1379,6 +1465,15 @@ kernels, the suite, all four benchmarks, the converters and every evidence file
 - J. Wei, S. Cao, T. Cao, L. Ma, L. Wang, Y. Zhang, M. Yang. *T-MAC: CPU Renaissance via Table Lookup for Low-Bit LLM Deployment on Edge*. EuroSys, 2025. arXiv:2407.00088.
 - compilade. *ggml-quants: ternary packing for TriLMs and BitNet b1.58*. llama.cpp pull request \#8151, August 2024.
 - T. Vaidhya, A. Kaushal, V. Jain, F. Couture-Harpin, P. Shishodia, M. Behbahani, Y. Nevmyvaka, I. Rish. *Spectra 1.1: Scaling Laws and Efficient Inference for Ternary Language Models*. arXiv:2506.23025, 2025.
+- T. M. Breyer, R. E. Korf. *1.6-Bit Pattern Databases*. Proceedings of the AAAI Conference on Artificial Intelligence 24(1):39--44, 2010. doi:10.1609/aaai.v24i1.7558.
+- A. Freudenberg, J. Vandenplas, M. Schlather, T. Pook, R. Evans, J. ten Napel. *Accelerated matrix-vector multiplications for matrices involving genotype covariates with applications in genomic prediction*. Frontiers in Genetics 14:1220408, 2023. doi:10.3389/fgene.2023.1220408.
+- J. M. Schanck et al. *NTRU reference implementation*, `ref-common/pack3.c`. \url{https://github.com/jschanck/ntru}, 2019. NIST post-quantum cryptography finalist; vendored through PQClean into liboqs.
+- M. Zukowski, S. Heman, N. Nes, P. Boncz. *Super-Scalar RAM-CPU Cache Compression*. Proceedings of the 22nd International Conference on Data Engineering (ICDE), 2006. doi:10.1109/ICDE.2006.150.
+- Y. Tan, X. Chen, G. Alonso, K.-S. Wong, B. He. *Approaching Shannon Bound with Lossless LLM Weight Compression*. arXiv:2606.15789, 2026. To appear, ISCA 2026.
+- W. Mu{\l}a, D. Lemire. *Faster Base64 Encoding and Decoding using AVX2 Instructions*. arXiv:1704.00605, 2017. See also W. Mu{\l}a, *Implementing byte-wise lookup table with PSHUFB*, 2016.
+- S. G\"otschel, M. Weiser. *Compression Challenges in Large Scale Partial Differential Equation Solvers*. Algorithms 12(9):197, 2019. Preprint arXiv:1907.00667.
+- G. Gerogiannis, S. Eyerman, E. Georganas, W. Heirman, J. Torrellas. *DECA: A Near-Core LLM Decompression Accelerator Grounded on a 3D Roofline Model*. MICRO-58, 2025. doi:10.1145/3725843.3756073. Preprint arXiv:2505.19349.
+- J. I. Aliaga, H. Anzt, T. Gr\"utzmacher, E. S. Quintana-Ort\'i, A. E. Tom\'as. *Compression and load balancing for efficient sparse matrix-vector product on multicore processors and graphics processing units*. Concurrency and Computation: Practice and Experience, 2021. doi:10.1002/cpe.6515.
 - H. Huang, D. Wu, Q. Hu, G. Yu, J. Yang, J. Zhu, X. Liu, D. Wu. *Sherry: Hardware-Efficient 1.25-Bit Ternary Quantization via Fine-grained Sparsification*. arXiv:2601.07892, 2026.
 - *Litespark Inference on Consumer CPUs: Custom SIMD Kernels for Ternary Neural Networks*. arXiv:2605.06485.
 - S. Han, H. Mao, W. J. Dally. *Deep Compression: Compressing Deep Neural Networks with Pruning, Trained Quantization and Huffman Coding*. ICLR, 2016. arXiv:1510.00149.

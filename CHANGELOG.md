@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Nine claims in earlier drafts of the paper were wrong and were corrected before
+Ten claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -81,6 +81,35 @@ been taken at $|a|\le127$ while the derivation eighteen lines above it takes
 proposal — not by any check in this repository, and no check here would have
 caught it: the kernel is correct, and it was the justification that was wrong.*
 
+**10. The independent-magic-multiply decode was claimed as ours.**
+It is not, and it is anticipated at exactly $A=3$, $k=5$, $p=8$. The NTRU
+reference implementation has recovered all five trits of a packed byte since
+2019 with four independent multiplies read straight from that byte — constants
+171, 57, 19, 203 with shifts 9, 9, 9, 14 — at dependency depth one and without
+a lookup table (`ref-common/pack3.c`, `poly_S3_frombytes`). We verified the
+four identities ourselves over all 256 byte values before conceding the point.
+What §1.1 now claims is only what follows the extraction: NTRU materialises
+every coefficient into an array and defers the mod-3 reduction to a separate
+sweep, where this kernel contracts on the digit planes so that no weight is
+ever materialised.
+
+Two further attributions were added at the same time and for the same reason.
+The packing predates ternary language models by fifteen years — Breyer and Korf
+store heuristic residues modulo three at 1.6 bits for pattern databases (AAAI
+2010) — and was published a year before `TQ1_0` in statistical genomics as
+*miraculix*'s `5codes`, whose stated motivation is the one taken here. And the
+profitability condition is Equation 1 of Zukowski et al., ICDE 2006, rearranged;
+what is new is that both of its terms are measured, one level down the memory
+hierarchy from where that paper measured them.
+
+*Found by a wave of agents sent to open every external source an earlier
+adversarial pass had leaned on without reading. Twelve sources; none
+fabricated; three required a claim here to be weakened. The same pass also
+overturned one of its own predecessors' verdicts: the ISCA 2026 entropy-coding
+paper does not close the entropy direction, because its format space bottoms
+out at INT4 and the strings `ternary`, `BitNet` and `1.58` appear zero times in
+its source.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -98,7 +127,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is nine. It was called seven until this list was written out — items 2
+The count is ten. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above
