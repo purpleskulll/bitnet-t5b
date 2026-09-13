@@ -108,14 +108,17 @@ block overhead alone, which is not a claim worth making. We had integrated into
 this very codebase without checking it, and record that here rather than in a
 footnote.
 
-What this paper contributes is therefore narrower: a per-tensor scale model that
-removes the block overhead and is drop-in for the `i2_s` path of
-`bitnet.cpp`, an interleave that is `i2_s`'s at two bits and
-`TQ1_0`'s at 1.600, adopted rather than designed, so the access
-pattern is unchanged from either, a decode of four *independent* magic multiplies, a
-column-blocked matrix--matrix kernel, an explicit and measurable condition for
-when any of this pays, and an end-to-end evaluation on a real ternary checkpoint
-against the format that ships with it.
+What this paper contributes is therefore narrower than any of that, and
+§1.1 concedes each piece to its owner. What is left: a block
+length of $160=32\times5$, which takes no remainder byte where `TQ1_0`'s
+64 does; a scale carried in `i2_s`'s own 32-byte tail, so the
+format is drop-in for the `i2_s` path of `bitnet.cpp` with no graph
+node and no loader change; the AVX2 instantiation of a depth-one decode that
+upstream has only on NEON; a column-blocked matrix--matrix kernel, which the
+nearest prior format has no equivalent of; the *measurement* of a
+twenty-year-old condition at a level of the hierarchy where it had not been
+measured; and an end-to-end evaluation on a real ternary checkpoint against the
+format that ships with it.
 
 **What this is and is not.**
 The mechanism is a *lossless re-encoding* of weights that are already
@@ -534,7 +537,9 @@ hence $\Phi=12$. This is a *worst-case* bound. The `i2_s` reference
 kernel folds every 32 blocks with four planes, up to
 $128\times 508=65,024$, and is correct only because signed activations
 cancel; §7.1 shows that removing the cancellation makes it
-disagree with exact arithmetic in 200 of 200 cases.
+disagree with exact arithmetic in 11,998 of 12,000 rows at
+$K=6912$ --- statistical rather than absolute, because with
+0.78% of headroom the outcome turns on each row's own code mean.
 
 ## 4.3 Why bytes and not words
 
@@ -1232,10 +1237,14 @@ does not survive this host's noise.
 **What survives.**  Against `TQ1_0` on this machine, t5b is worth
 4.7% of the ternary bytes, plus the fact of being wired into the
 batched path. The claim that a sub-two-bit ternary packing is itself novel does
-not survive and is withdrawn in §1.1. The narrower claims --- the
-scale model that removes the block overhead, the `i2_s`-compatible
-interleave, the independent-quotient decode, the column-blocked kernel and the
-profitability condition --- do.
+not survive and is withdrawn in §1.1, along with the scale
+model, the interleave, the extraction arithmetic and the condition itself. What
+survives is narrower and is listed there: the block length that removes the
+remainder byte, the scale riding in `i2_s`'s existing 32-byte tail so
+that no graph node and no loader change is needed, the AVX2 instantiation of the
+depth-one decode, the column-blocked matrix--matrix kernel --- which
+`TQ1_0` has no equivalent of --- and the *measurement* of the
+condition rather than the condition.
 
 ---
 
