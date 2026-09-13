@@ -42,5 +42,16 @@ at 1.75 it does not. The sign of the paper's only positive prediction cell
 therefore depends on the machine being quiet, and the paper has to say so
 rather than quote 3.03 as though it were a constant.
 
-WHAT WOULD SETTLE IT: the same five runs on an idle box. Not available here
-today; the measurement is cheap and is the first thing to do when one is.
+WHAT WOULD SETTLE IT: the same five runs on an idle box. That is not a matter of
+waiting for a quiet hour on THIS machine. Checked at 22:06 on 2026-09-13, after
+every agent of the session had finished: load 4.25, with ctbot.swarm running for
+over two hours and two lauf_echt.py research runs beside it, and cpu6 and cpu10
+at zero percent idle. That is the owner's other project -- a live trading system
+-- and it is not something to stop for a benchmark.
+
+A six-thread measurement needs six cores by definition, so as long as that work
+runs, Sigma_6 cannot be taken cleanly here at all. The number in the paper's
+table is from a window when it was not running. The honest position is therefore
+not "we have not repeated it yet" but "this host cannot repeat it while it is
+doing its other job", and the paper states the consequence -- that S sits inside
+the range Sigma_6 takes -- rather than quoting 3.03 as settled.
