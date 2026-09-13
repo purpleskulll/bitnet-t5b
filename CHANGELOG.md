@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Fifteen claims in earlier drafts of the paper were wrong and were corrected before
+Seventeen claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -239,6 +239,23 @@ both cases the agent corrected the reviewer as well: the proposed cause of the
 overshoot — that i2_s regresses from four threads to six — does not survive the
 eight observations, which show it flat, exactly as the model predicts.*
 
+**16. The headline throughput ratio was one invocation of five.**
+The table printed 1.132 and 1.143; `results/inference_t5b.txt:215` shows those
+are invocation 5, and line 217 gives the median over the five as 1.119 and
+1.133. The per-invocation ratios were listed underneath all along, so nothing
+was hidden — but quoting the fifth pair in the table, the abstract and the
+conclusion, with a spread running to 1.253, is a choice rather than a
+measurement. Both papers now quote the median and say which figure is which.
+
+**17. "Σ values ranging from 1.35 to 3.08."**
+No Σ measurement supports 3.08. Every Σ the paper prints runs 1.35, 1.63, 1.78,
+1.86, 3.03, and a grep over both trees finds 3.08 in no results file as a
+surplus. Corrected to 3.03.
+
+*Both found by a sweep over the forty minor findings of five cold reads —
+26 held, 8 were already fixed, 4 did not. These two are the ones a referee
+recomputes.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -254,9 +271,10 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/fix_patch_hunks.py --check` | the patch's `@@` counts match its content |
 | `tools/check_buildable.py` | every shipped source is named by a build rule |
 | `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
+| `tools/check_short_parity.py` | the six-page submission carries no figure the long paper lacks |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is fifteen. It was called seven until this list was written out — items 2
+The count is seventeen. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above

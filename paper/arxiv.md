@@ -32,8 +32,8 @@ abstract: |
   with both of its terms taken from the part the kernel runs on. So measured, t5b
   reduces the shipped `BitNet-b1.58-2B-4T` checkpoint
   from 1.10 GiB to 1.00 GiB and yields, under
-  `llama-bench` *at four threads*, $1.132\times$ prompt and
-  $1.143\times$ generation throughput, faster in five of five invocations. The re-encoding is lossless and
+  `llama-bench` *at four threads*, a median $1.119\times$ prompt and
+  $1.133\times$ generation throughput over five invocations, faster in five of five. The re-encoding is lossless and
   the output is bit-identical: perplexity over 20,480 tokens of WikiText-2
   agrees with the two-bit baseline to six significant figures. We further report
   that 4.76% of the model's feed-forward neurons are identically
@@ -77,7 +77,9 @@ $\pi$ that port's throughput, and $B$ the memory bandwidth available to the
 executing core. The first term is arithmetic; the second is transport.
 
 Existing ternary CPU formats occupy the extremes of the $(\beta,\mu)$ trade-off
-that (1) describes. `llama.cpp`'s `i2_s` uses
+that (1) describes. `bitnet.cpp`'s `i2_s` --- the
+baseline throughout, and a type of its `llama.cpp` fork rather than of
+`ggml` --- uses
 $\beta=2$ with a decode of three shifts and four masks per 128 weights.
 `bitnet.cpp`'s `TL2` and the T-MAC system reach
 $\beta\approx1.667$ by table lookup, paying memory for the tables
@@ -226,8 +228,8 @@ a new quantisation scheme, and it composes with all three.
 
          **We answered that question, and the answer is no --- for
          `TQ1_0`.** Transplanting the depth-one form into upstream's own
-         kernel and measuring it there gives $0.983\times$, slower in 7 of
-         54 interleaved rounds across six invocations, at $131\to137$ vector
+         kernel and measuring it there gives $0.983\times$ --- faster in only 7
+         of 54 interleaved rounds across six invocations --- at $131\to137$ vector
          operations and $0\to4$ register spills. The reason does not transfer to
          the format described here, and the difference is the encoding.
          `TQ1_0` stores $\lceil 256v/243\rceil$, a fixed-point fraction, so
@@ -890,11 +892,15 @@ slack above a floor, not a quantity the model claims to give.
 |---|---|---|---|
 | `i2_s` | 1.10 GiB | $119.65\pm 2.27$ | $22.56\pm 1.26$ |
 | **t5b** | **1.00 GiB** | $\mathbf{135.45\pm 1.21}$ | $\mathbf{25.78\pm 0.87}$ |
-| ratio | 0.909 | **1.132** | **1.143** |
+| ratio | 0.909 | **1.119** | **1.133** |
 
-Faster in five of five invocations on both measures; per-invocation ratios
+The throughput columns are one invocation's `llama-bench` output; the
+ratio row is the *median* over five, which is the figure quoted
+throughout. Faster in five of five on both measures, with per-invocation ratios
 $1.096$, $1.112$, $1.119$, $1.253$, $1.132$ (prompt) and $1.099$, $1.133$,
-$1.123$, $1.242$, $1.143$ (generation).
+$1.123$, $1.242$, $1.143$ (generation) --- a spread wide enough that quoting any
+single one of them as the result, which an earlier draft did, is a choice rather
+than a measurement.
 
 **The four-thread result contradicted §5's
 prediction; the contradiction is now resolved, and the prediction was right.**
@@ -1484,7 +1490,7 @@ rose in six runs of eight, a majority and not a clean separation; the host is a
 shared two-vCPU sandbox, and the reviewer's own caveat --- that run-to-run
 variation there exceeds the effect being measured --- is adopted rather than
 argued away. An 8.8% shift in $S$ against $\Sigma$ values ranging
-from 1.35 to 3.08 does not by itself decide
+from 1.35 to 3.03 does not by itself decide
 (17) either way at any thread count.
 
 **What the static model got right, and where it was pessimistic.**
@@ -1657,7 +1663,7 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Fifteen claims in earlier drafts of this paper were wrong and were corrected
+Seventeen claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a
