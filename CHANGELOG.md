@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Seventeen claims in earlier drafts of the paper were wrong and were corrected before
+Twenty claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -256,6 +256,43 @@ surplus. Corrected to 3.03.
 26 held, 8 were already fixed, 4 did not. These two are the ones a referee
 recomputes.*
 
+**18. Two different accumulator bounds for the same baseline kernel, and the
+public bug report inherited one of them.**
+§4.2 gave the reference kernel's worst case as 128 × 508 = 65,024, taking the
+code range as 0..2; §7.5 derived 3048 per block from the range 0..3 and called
+the kernel's 32-block fold "three times its own bound", which only works on the
+second basis. The kernel settles it: `_mm256_set1_epi8(0x03)` at `quants.c:1400`
+masks to 0..3, so its own bound is 128 × 762 = 97,536 and 65,024 is what the
+encoder can actually produce. Both are now given and labelled, as are the two
+$|a|$ conventions — 128 for t5b, covering $a=-128$, and 127 for the reference
+kernel, which is what its own comments use.
+
+This one had already left the building: `microsoft/BitNet#629`, filed an hour
+earlier, quoted the 508 figure while `#628` derived 762 from the mask. Two
+issues from the same reporter quoting two operand ranges for one representation
+is not a detail. Corrected in a comment on #629 rather than by editing the issue
+body, so the record shows what was filed.
+
+**19. "18.01 predicted against 19.7 measured per 160-weight block."**
+No file records 19.7. The paper's own constants — 33.74 GMAC/s at 3.91 GHz —
+give 160 × 3.91 / 33.74 = 18.54 cycles, against which the model is optimistic by
+2.9 %, not the stated 6–11 %. The 19.7 would need a 4.15 GHz clock. The derived
+figure and the discrepancy are now both reported rather than one being chosen,
+and §7.7's dependent claim is re-derived: 2.45 vector operations per cycle
+against 2.32, both above the two per cycle this part should sustain, which is
+itself a reason to treat the absolutes as indicative.
+
+**20. Three things the evidence files disclosed and the paper did not.**
+The adverse round of the cheaper-decode measurement read 0.6086 — an excursion
+eight times the control spread asserted in the same sentence — and was caused by
+a second benchmark on the same pinned core; `results/shufdig_measurement.txt`
+says so in full and the paper said nothing. The concurrency series was read as
+"the advantage grows" from four unreplicated points, one of which
+`results/inference_t5b.txt` records as an outlier. And the cheaper decode's build
+option was never stated to be off by default, while every figure elsewhere
+assumes it is. All three now say in the paper what the file behind them already
+said.
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -274,7 +311,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_short_parity.py` | the six-page submission carries no figure the long paper lacks |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is seventeen. It was called seven until this list was written out — items 2
+The count is twenty. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above

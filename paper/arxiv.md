@@ -536,9 +536,15 @@ $$
 $$
 
 hence $\Phi=12$. This is a *worst-case* bound. The `i2_s` reference
-kernel folds every 32 blocks with four planes, up to
-$128\times 508=65,024$, and is correct only because signed activations
-cancel; §7.1 shows that removing the cancellation makes it
+kernel folds every 32 blocks with four planes. Its own operands mask the codes
+to $0\ldots3$, so a lane can reach $128\times 762=97,536$; the encoder
+emits at most code 2, which still gives $128\times 508=65,024$. Either
+figure is twice the 32,767 ceiling or more, and the kernel is correct only
+because signed activations cancel. (The bound for t5b above takes $|a|\le128$, covering $a=-128$; the
+figures for the reference kernel take 127, which is the convention its
+own comments use. The difference is under 1% and neither changes
+a conclusion, but the two are not the same convention.)
+§7.1 shows that removing the cancellation makes it
 disagree with exact arithmetic in 11,998 of 12,000 rows at
 $K=6912$ --- statistical rather than absolute, because with
 0.78% of headroom the outcome turns on each row's own code mean.
@@ -1046,9 +1052,15 @@ weights still stream from memory, so the byte saving remains live and the
 prediction was wrong in its premise.
 
 **Concurrency.**  Total throughput at 1, 2, 4, 8 parallel sequences:
-$1.041$, $1.041$, $1.027$, $1.097$. The advantage *grows*: $N$ concurrent
-sequences turn generation into a matrix--matrix product with $N$ columns, across
-which the decode amortises.
+$1.041$, $1.041$, $1.027$, $1.097$. One invocation per model at each width, no
+repetition, and the $N=4$ prompt cell is a recorded outlier
+(`results/inference_t5b.txt`), so this is a shape and not a trend: the
+series is flat, then falls, then rises, and only the last point would support
+the reading that the advantage *grows*. The mechanism that would make it
+grow is real --- $N$ concurrent sequences turn generation into a
+matrix--matrix product with $N$ columns, across which the decode amortises ---
+and §7.7 measures that amortisation directly and finds it
+complete by $N=8$. These four points do not establish it.
 
 **Across checkpoints.**  On the independent fine-tune: identical output
 on three prompts, $1.120\times$ prompt and $1.075\times$ generation.
@@ -1139,7 +1151,9 @@ $d_4=\lfloor q_3/3\rfloor$, $d_3=q_3\bmod 3$ and $3q_3$ from $q_3$ alone, so the
 multiplier $M_4=811$ and both of its `vpmulhuw` disappear. The packed
 representation is untouched --- same five digits, same 1.60755
 bits/weight, same bytes --- so the variant is a build option
-(`-DTERNARY_T5B_SHUFDIG`) and not a second format. It is bit-identical:
+(`-DTERNARY_T5B_SHUFDIG`) and not a second format. It is *off* by
+default, and every figure elsewhere in this paper --- every $S$, every rate,
+every throughput --- is from the build without it. It is bit-identical:
 the full suite of 97,529 assertions passes against it, and the two decoders
 agree on all 256 byte values including the thirteen foreign ones.
 
@@ -1149,7 +1163,11 @@ from 13 to 11 multiply-port operations.\footnote{The count depends on
 gives 42 and 36. The 0.2625 vector operations per weight quoted in
 §9 is the latter count.} Fifteen interleaved rounds, with the
 untouched `i2_s` kernel measured in the same binaries as a control, give a
-median of $1.2254\times$ on the contraction, faster in 14 of 15 rounds,
+median of $1.2254\times$ on the contraction, faster in 14 of 15 rounds
+--- the exception reading $0.6086$, an excursion eight times the control's
+spread, caused by a second benchmark started on the same pinned core while the
+run was going and left in because excluding it would raise the median to
+$1.2257$ and the significance to $p=0.000122$ ---
 \footnote{`shufdig_ab.sh` reproduces every figure in this subsection. It
 compiles both arms from the one file, asserts that the arm without the
 definition is byte-identical to the shipped kernel, chooses its core by sampling
@@ -1183,8 +1201,12 @@ $43/37=1.1622$ on total vector operations, $13/11=1.1818$ on the
 multiply port, against 1.2254 measured. The instruction mix shows the
 multiply port falling from 13 to 11 while the shift-and-shuffle pair stays at
 exactly 9 --- three shifts traded for three shuffles --- so the distribution
-across ports flattens, and the loop sustains 2.30 vector operations per cycle
-against the baseline's 2.18. Both loops spill zero times, so register pressure
+across ports flattens. On the cycle count derived from this host's measured
+rate and clock the loop sustains 2.45 vector operations per cycle against
+the baseline's 2.32 --- both above the two per cycle that a part cracking
+every 256-bit integer operation into two 128-bit micro-operations should
+sustain, which is itself a reason to treat these absolute figures as indicative
+and the ratio as the measurement. Both loops spill zero times, so register pressure
 is not the mechanism. The flatter distribution is *consistent* with the
 residual 5% and is not isolated by this experiment; what the
 experiment does establish is that removing operations is not the only lever, and
@@ -1381,9 +1403,16 @@ the difference being a compiler version.
 **The model is calibrated before it is used.** Its Zen 2 prediction is
 $S=2.501$ against the $S=81.93/33.74=2.428$ measured on
 this host: an error of 3.0%. The script exits non-zero should that
-drift past 8%. Absolute cycle counts are uniformly optimistic by
-6–11\,\% (18.01 predicted against 19.7 measured per
-160-weight block), which is why only the ratio is carried forward.
+drift past 8%. Absolute cycle counts are optimistic, which is why only
+the ratio is carried forward --- but by how much this paper cannot say
+precisely, and an earlier draft overstated its own confidence here. It quoted
+18.01 predicted against 19.7 measured per 160-weight block, a
+6–11% band. No file records that 19.7: the figure
+implied by this paper's own two constants, 33.74\,GMAC/s at
+3.91 GHz, is $160\times3.91/33.74=18.54$
+cycles, against which the model is optimistic by 2.9%. The
+19.7 would require a clock of 4.15 GHz. We report the
+derived figure and the discrepancy rather than choosing between them.
 
 | target | packed, cyc/block | baseline, cyc/block | $S$ |
 |---|---|---|---|
@@ -1663,7 +1692,7 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Seventeen claims in earlier drafts of this paper were wrong and were corrected
+Twenty claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a
