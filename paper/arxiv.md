@@ -129,12 +129,33 @@ a new quantisation scheme, and it composes with all three.
          decompressed. Both decode by table: miraculix precomputes the $3^{5}$
          possible partial dot products per tile and uses the packed byte directly
          as the index, so it belongs with the table-lookup systems above rather
-         than with the decode of §4. Ours is the
-         scale model --- one per-tensor scale in place of `TQ1_0`'s
-         per-256-block f16 and its 16-element two-bit remainder, removing the block
-         overhead entirely (1.600 against 1.6875, 20%
-         denser than `i2_s`) --- with an interleave identical to
-         `i2_s`'s.
+         than with the decode of §4.
+
+         **Nor is the scale model ours, and it is in the very pull request
+         cited above.** `block_q1_3` lived on \#8151 from 2024-06-19 to
+         2024-07-30: five elements per byte, annotated in the same words
+         (*``5 elements per byte ($3^5 = 243 < 256$)''*) and carrying
+         *no* scale field at all, at 1.625 bits per weight. Its scale
+         was a separate per-layer `ggml` tensor of extent one applied after
+         the matmul --- `Qcur = ggml_mul(ctx0, Qcur,
+         model.layers[il].wq_scale)` in `build_bitnet`. It was replaced by
+         `TQ1_0`'s per-block f16 deliberately, so that the stock computation
+         graph could be reused, and the cost of that choice was recorded at the
+         time as wasting 0.0625 bits per weight. The same construction ships
+         today as `IQ1_BN` in `ik_llama.cpp`.
+
+         What is left is narrower again, and worth stating with its true size.
+         Of the 20,828,160 bytes t5b saves against `TQ1_0`,
+         `Q1_3` already delivered 78.2%; the residual is
+         4,546,560 bytes, 1.03% of the `TQ1_0` ternary
+         payload and 0.38% of the file. It is a block-length choice
+         rather than a scale model: $64 = 12\times5+4$ needs a remainder byte and
+         lands at 1.6250, whereas $160 = 32\times5$ needs none and lands at
+         1.6000. The one thing here that is not anticipated is that the
+         scale rides in `i2_s`'s own 32-byte tail, so no graph node and no
+         loader change is required where `Q1_3` needed both --- and that is
+         `i2_s`'s convention, not ours. As with the packing and the decode,
+         we found this after the fact.
 2. A decode of depth one rather than depth five (§4). That a
          multiplication-based decode avoids division and modulo is also known:
          Spectra 1.1 exploits $3^{5}\approx 2^{8}$ to extract the trits
@@ -1045,8 +1066,12 @@ at $K = 6912$ and one 32-byte record per tensor.
 **On size the honest margin is small.**  4.7% of the
 ternary payload and 1.9% of the file. Four fifths of the saving
 this work reports against `i2_s` was already present in the vendored tree
-under an upstream type number; the remaining fifth is what the per-tensor scale
-model contributes.
+under an upstream type number. Of the remaining fifth, 78.2% was
+present in the same pull request as `Q1_3` before `TQ1_0` replaced
+it (§1.1). What is attributable here is 4,546,560 bytes ---
+1.03% of the `TQ1_0` ternary payload and
+0.38% of the file --- and it is the block length, $160=32\times5$
+taking no remainder byte where $64=12\times5+4$ does.
 
 **On speed the margin is large and mostly not about the packing.**
 Three rotated `llama-bench` invocations, all three files in each:
@@ -1485,10 +1510,10 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Eleven claims in earlier drafts of this paper were wrong and were corrected
-before submission --- among them the novelty of the packing, the novelty of the
-depth-one extraction arithmetic, the novelty of the fused digit-plane
-contraction, two statements about dead-neuron removal, and the assertion that a
+Twelve claims in earlier drafts of this paper were wrong and were corrected
+before submission --- among them the novelty of the packing, of the depth-one
+extraction arithmetic, of the fused digit-plane contraction and of the
+per-tensor scale model, two statements about dead-neuron removal, and the assertion that a
 run on VNNI hardware would settle §9.1. Each is listed with
 what replaced it and how it was found in `CHANGELOG.md` in the repository
 below, kept there rather than here so that this document states what holds.

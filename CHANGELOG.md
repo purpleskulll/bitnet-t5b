@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Eleven claims in earlier drafts of the paper were wrong and were corrected before
+Twelve claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -139,6 +139,38 @@ failure — the packing, the recommendation, the extraction arithmetic, and now
 the fused contraction — and the pattern is worth naming: each time, the thing
 believed novel was already in a codebase this work had read part of.*
 
+**12. The per-tensor scale model was claimed as ours, and it is in the pull
+request we already cite.**
+`block_q1_3` lived on ggml-org/llama.cpp#8151 from 2024-06-19 (`bd807499f7`) to
+2024-07-30 (`77b8f84ae7`, which replaced it with `TQ1_0`). Read here from
+`ggml-common.h` at `dd3e62a703`:
+
+```c
+#define QK1_3 64
+typedef struct {
+    uint8_t q[(QK1_3 - 4*QK1_3/64)/5]; // 5 elements per byte (3^5 = 243 < 256)
+    uint8_t qs[QK1_3/64]; // 4 elements per byte
+} block_q1_3;
+```
+
+No scale field. The scale was a per-layer `ggml` tensor of extent one applied
+after the matmul — `Qcur = ggml_mul(ctx0, Qcur, model.layers[il].wq_scale)` in
+`build_bitnet`, verified in `src/llama.cpp` at the same commit. That is exactly
+what §1.1 called "the scale model".
+
+The arithmetic was redone here rather than taken: of the 20,828,160 bytes t5b
+saves against `TQ1_0`, `Q1_3` already delivered 78.2 %. The residual is
+4,546,560 bytes — 1.03 % of the `TQ1_0` ternary payload, 0.38 % of the file —
+and it is a block-length choice, since 64 = 12·5+4 needs a remainder byte
+(1.6250 bpw) and 160 = 32·5 does not (1.6000). What is genuinely unanticipated
+is only that the scale rides in `i2_s`'s existing 32-byte tail, so no graph node
+and no loader change is needed where `Q1_3` required both.
+
+*Found by an adversary sent specifically to look for a fifth anticipation after
+four had fallen in a day. It found one. Every element was re-verified here
+against the GitHub API — the commit list of #8151, the struct at `dd3e62a703`,
+and the `ggml_mul` call site — before the concession was written.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -156,7 +188,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is eleven. It was called seven until this list was written out — items 2
+The count is twelve. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above
