@@ -365,6 +365,16 @@ reconstructs tiles into shared memory for tensor cores rather than contracting
 without materialising. Whether an interleaved rANS decoder can meet that bound
 on a SIMD CPU is open, and this paper does not answer it.
 
+\paragraph{Whose kernel the baseline is.} \code{i2\_s} is not an upstream
+\code{ggml} type. \code{ggml-org/llama.cpp} carries \code{TQ1\_0} and
+\code{TQ2\_0} as type numbers 34 and 35 and nothing at 36; \code{GGML\_TYPE\_I2\_S
+= 36} is declared in the \code{llama.cpp} fork that \code{microsoft/BitNet}
+pins as \code{3rdparty/llama.cpp}, at the commit this work builds against. Every
+comparison in this paper is therefore against that fork's kernel, not against
+\code{ggml}'s, and the two ternary kernels \code{ggml} does carry are examined
+separately in \S\ref{sec:tq10}. The distinction matters for where a reader
+looks and for where a defect would be reported.
+
 \subsection{The interface a replacement must preserve}
 \code{ggml}'s ternary kernels do not compute $\sum_i w_ia_i$ directly. They
 compute on the shifted code $c_i=w_i+1\in\{0,1,2\}$, the unsigned operand
@@ -559,8 +569,8 @@ per block. Folding to 32-bit every $\Phi$ blocks is safe iff
 2560\,\Phi\le\num{32767}\iff\Phi\le\num{12.80},
 \label{eq:fold}
 \end{equation}
-hence $\Phi=12$. This is a \emph{worst-case} bound. \code{llama.cpp}'s own
-\code{i2\_s} kernel folds every 32 blocks with four planes, up to
+hence $\Phi=12$. This is a \emph{worst-case} bound. The \code{i2\_s} reference
+kernel folds every 32 blocks with four planes, up to
 $128\times 508=\num{65024}$, and is correct only because signed activations
 cancel; \S\ref{sec:correct} shows that removing the cancellation makes it
 disagree with exact arithmetic in 200 of 200 cases.
@@ -787,7 +797,7 @@ each magic multiplier perturbed, the digit multiplication changed from $3y$ to
 $5y$, the odd-byte view shifted by seven instead of eight, the low-byte mask
 narrowed, two digit planes given each other's activations, the radix changed,
 the digit count reduced, the accumulator fold raised from 12 to 13 and to
-upstream's 32, and six aimed at the column-blocked GEMM path specifically, which
+the reference kernel's 32, and six aimed at the column-blocked GEMM path specifically, which
 shares no code with the per-row one and carries the \code{pp512} result.
 \textbf{Eighteen are killed.}
 
@@ -851,7 +861,7 @@ One core, weights resident in L2 so transport cannot bind:
 \toprule
 kernel & GMAC/s & instr & mul & spills & weights & ceiling & of it \\
 \midrule
-\code{i2\_s} (upstream) & 81.93 & 21 & 4 & 0 & 128 & 130.9 & \SI{63}{\percent} \\
+\code{i2\_s} (the fork's) & 81.93 & 21 & 4 & 0 & 128 & 130.9 & \SI{63}{\percent} \\
 t10 (word)              & 30.04 & 50.25 & 19.25 & 8.25 & 160 & 34.6 & \SI{87}{\percent} \\
 \textbf{t5b (byte)}     & \textbf{33.74} & 47 & 13 & 0 & 160 & 50.5 & \SI{67}{\percent} \\
 \bottomrule

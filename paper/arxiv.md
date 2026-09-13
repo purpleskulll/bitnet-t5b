@@ -315,6 +315,16 @@ reconstructs tiles into shared memory for tensor cores rather than contracting
 without materialising. Whether an interleaved rANS decoder can meet that bound
 on a SIMD CPU is open, and this paper does not answer it.
 
+**Whose kernel the baseline is.**  `i2_s` is not an upstream
+`ggml` type. `ggml-org/llama.cpp` carries `TQ1_0` and
+`TQ2_0` as type numbers 34 and 35 and nothing at 36; `GGML_TYPE_I2_S
+= 36` is declared in the `llama.cpp` fork that `microsoft/BitNet`
+pins as `3rdparty/llama.cpp`, at the commit this work builds against. Every
+comparison in this paper is therefore against that fork's kernel, not against
+`ggml`'s, and the two ternary kernels `ggml` does carry are examined
+separately in §7.8. The distinction matters for where a reader
+looks and for where a defect would be reported.
+
 ## 2.2 The interface a replacement must preserve
 
 `ggml`'s ternary kernels do not compute $\sum_i w_ia_i$ directly. They
@@ -520,8 +530,8 @@ $$
 2560\,\Phi\le32,767\iff\Phi\le12.80,
 $$
 
-hence $\Phi=12$. This is a *worst-case* bound. `llama.cpp`'s own
-`i2_s` kernel folds every 32 blocks with four planes, up to
+hence $\Phi=12$. This is a *worst-case* bound. The `i2_s` reference
+kernel folds every 32 blocks with four planes, up to
 $128\times 508=65,024$, and is correct only because signed activations
 cancel; §7.1 shows that removing the cancellation makes it
 disagree with exact arithmetic in 200 of 200 cases.
@@ -746,7 +756,7 @@ each magic multiplier perturbed, the digit multiplication changed from $3y$ to
 $5y$, the odd-byte view shifted by seven instead of eight, the low-byte mask
 narrowed, two digit planes given each other's activations, the radix changed,
 the digit count reduced, the accumulator fold raised from 12 to 13 and to
-upstream's 32, and six aimed at the column-blocked GEMM path specifically, which
+the reference kernel's 32, and six aimed at the column-blocked GEMM path specifically, which
 shares no code with the per-row one and carries the `pp512` result.
 **Eighteen are killed.**
 
@@ -808,7 +818,7 @@ One core, weights resident in L2 so transport cannot bind:
 
 | kernel | GMAC/s | instr | mul | spills | weights | ceiling | of it |
 |---|---|---|---|---|---|---|---|
-| `i2_s` (upstream) | 81.93 | 21 | 4 | 0 | 128 | 130.9 | 63% |
+| `i2_s` (the fork's) | 81.93 | 21 | 4 | 0 | 128 | 130.9 | 63% |
 | t10 (word) | 30.04 | 50.25 | 19.25 | 8.25 | 160 | 34.6 | 87% |
 | **t5b (byte)** | **33.74** | 47 | 13 | 0 | 160 | 50.5 | 67% |
 
