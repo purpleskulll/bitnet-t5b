@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Twelve claims in earlier drafts of the paper were wrong and were corrected before
+Thirteen claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -177,6 +177,34 @@ four had fallen in a day. It found one. Every element was re-verified here
 against the GitHub API — the commit list of #8151, the struct at `dd3e62a703`,
 and the `ggml_mul` call site — before the concession was written.*
 
+**13. "§4 answers it with a measurement", and "the depth-one extraction costs
+more multiply-port operations than the serial form."**
+Neither held. The first was a pointer to nothing: §4 contains no
+mulhi-versus-shift-and-add comparison, and the string `0.983` appeared zero
+times in the paper while the measurement sat in `pr/llamacpp-tq1_0-mulhi/`,
+uncited. The second is contradicted by the kernel's own header eleven hundred
+lines away — "Same instruction count as a divide-by-three chain, one eighth the
+dependency depth" — and it is the header that is right: a serial chain
+`q_{j+1} = mulhi(q_j, 21846)` over the two 16-bit views issues two multiplies at
+each of four levels, the same eight the independent form issues. The sentence
+was true only against a *fractional* encoding's serial form, which uses no
+multiply-port instruction at all, so it compared this format's decode against
+another format's alternative.
+
+§1.1 now reports the measurement, names the arm it was taken on, and explains
+why its negative result does not transfer: `TQ1_0` stores ceil(256v/243) and can
+therefore extract digits in byte lanes with no multiply at all, while t5b stores
+the integer and has no byte-lane route to lose to. It also states the weaker
+consequence plainly — depth one costs nothing here, and relieves a constraint
+that §7.2 measures as not binding, the loop running at 67 % of its multiply-port
+ceiling.
+
+*Found by an agent sent to check whether the one surviving novelty claim pointed
+at a measurement that contradicts it. It found something better: the two
+measurements do not conflict, they are about different objects, and the real
+defects were a dangling forward reference and a cost claim the source file had
+already refuted.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -194,7 +222,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is twelve. It was called seven until this list was written out — items 2
+The count is thirteen. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above

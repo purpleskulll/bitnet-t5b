@@ -24,8 +24,10 @@ abstract: |
   `ggml` type alongside the existing two-bit format, then measure what it is
   worth. The AVX2 realisation of the depth-one decode through the high half of a
   16-bit multiply is the one instantiation upstream does not have, and names as an
-  open question in its own source; we answer it with a measurement, and the answer
-  is that it is not faster. The profitability condition is measured rather than
+  open question in its own source. We answer that question by transplanting the
+  form into upstream's kernel and measuring it there, where it turns out
+  *not* to pay --- for a reason that is a property of upstream's encoding
+  rather than of the idea, and that does not transfer to this one. The profitability condition is measured rather than
   assumed, one level down the memory hierarchy from where it was first stated,
   with both of its terms taken from the part the kernel runs on. So measured, t5b
   reduces the shipped `BitNet-b1.58-2B-4T` checkpoint
@@ -214,16 +216,37 @@ a new quantisation scheme, and it composes with all three.
          form in the AVX2 *main* path, reached through the high half of a
          16-bit multiply. Upstream states that as an open question in the file
          itself --- `// TODO: can _mm256_mulhi_epu16 be faster even if
-         16-bits?`, `arch/x86/quants.c:1406` --- and §4
-         answers it with a measurement. We verified every sentence of this
-         paragraph against the vendored kernel at `390c307` rather than
+         16-bits?`, `arch/x86/quants.c:1406`. We verified every sentence of
+         this paragraph against the vendored kernel at `390c307` rather than
          against a description of it.
 
-         The depth-one extraction costs more multiply-port operations than the
-         serial form and buys latency; §5 gives the condition
-         under which that is the right trade. No head-to-head measurement against
-         Spectra's kernel was made: their figures are from a Mac M4 and an EPYC
-         part, ours from one Zen 2 host.
+         **We answered that question, and the answer is no --- for
+         `TQ1_0`.** Transplanting the depth-one form into upstream's own
+         kernel and measuring it there gives $0.983\times$, slower in 7 of
+         54 interleaved rounds across six invocations, at $131\to137$ vector
+         operations and $0\to4$ register spills. The reason does not transfer to
+         the format described here, and the difference is the encoding.
+         `TQ1_0` stores $\lceil 256v/243\rceil$, a fixed-point fraction, so
+         its digits come out by multiplying by $3^{j}$ in *byte* lanes and
+         taking the top bits --- no multiply-port instruction at all, and no reason
+         to leave byte lanes. t5b stores the integer $v\le242$, so its digits
+         are floor divisions, AVX2 has no 8-bit multiply, and the even/odd split
+         and fold that costs `TQ1_0` those six operations is not an
+         alternative here but the only route. The instantiation is therefore real
+         and is not worth what a reader might assume: it is the right choice for
+         this encoding and the wrong one for upstream's.
+
+         **And against the serial form *this* encoding admits, depth
+         one is free rather than expensive.** A chain
+         $q_{j+1}=`mulhi`(q_{j},21,846)$ over the two views is two
+         multiplies at each of four levels, the same eight the independent form
+         issues; what changes is only the dependence. Nor does the latency it buys
+         bind: §7 measures the loop at 67% of its
+         multiply-port ceiling. So the honest statement is that depth one costs
+         nothing and relieves a constraint that was not the binding one, which is a
+         weaker claim than an earlier draft made. No head-to-head measurement
+         against Spectra's kernel was made: their figures are from a Mac M4 and an
+         EPYC part, ours from one Zen 2 host.
 3. A *measurement* of the profitability condition
          (§5), derived from (1) and verified by
          measuring both $\pi$ and $B$ rather than inferring either. The criterion
@@ -1569,7 +1592,7 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Twelve claims in earlier drafts of this paper were wrong and were corrected
+Thirteen claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a
