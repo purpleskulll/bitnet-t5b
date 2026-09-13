@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Twenty-one claims in earlier drafts of the paper were wrong and were corrected before
+Twenty-three claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -322,6 +322,35 @@ dispatch site, median 1.257, baseline slower in 9 of 9.
 that the same paragraph's "independent instrument" was being compared against
 the derived number rather than the measured one.*
 
+**22. "$S = 2.43$ lies inside that interval" — it does not.**
+The short paper gave Sigma at six threads as 1.65 to 2.38 under load and then
+said S = 2.43 lies inside it. 2.43 is *above* 2.38. The true statement is
+sharper and worse for the paper: S sits above every loaded measurement and below
+the idle 3.03, so at six threads the condition holds **only while the host is
+quiet**. Both papers now say that; the long one's wording ("the interval it
+spans", which included the idle value) was defensible but ambiguous and is now
+explicit.
+
+*Found by a fact-checker sent to take every claim in the four-page submission
+back to its evidence. It confirmed the rest of the foundation at primary
+sources: all five concession citations, the magic multipliers over all 256
+bytes, $\Phi=12$, the 2816 foreign-byte bound, the no-borrow property, the
+4.7 %/1.9 % arithmetic and the 78.2 % split — and, in the vendored kernel, the
+claim I trusted least: `TQ1_0` really has no GEMM equivalent (`assert(nrc==1)`
+in both arch paths, no `.gemm` trait, no sgemm case, absent from `repack.cpp`).*
+
+**23. Five things the cut re-introduced or overstated.**
+Cutting 27 pages to four dropped the qualifications with the prose. The
+submission claimed the crossing is "observed between four and six threads" while
+reporting a four-thread win two pages later — the resolution, that the
+dispatched baseline is itself 1.6x slower than the reference the ratio was taken
+against, had been cut. It credited 4,546,560 bytes jointly to the block length
+and to the scale-in-tail, though the latter saves no bytes at all. It said the
+depth-one decode is one "upstream has only on NEON", which upstream's own
+four-element AVX2 tail falsifies. It never said the cheaper decode is off by
+default. And its availability section promised that "each figure above is
+recomputed by a named script" while naming none. All five corrected.
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -340,7 +369,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_short_parity.py` | the six-page submission carries no figure the long paper lacks |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is twenty-one. It was called seven until this list was written out — items 2
+The count is twenty-three. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above

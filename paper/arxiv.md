@@ -698,8 +698,9 @@ six-thread arm does not get six cores, and the cache-resident numerator suffers
 more from that than the bandwidth-limited denominator, so a contended
 measurement is a lower bound. What they establish is that $\Sigma_{6}$ is a
 property of the machine's occupancy as well as of the part, and that
-$S=2.43$ lies *inside* the interval it spans. At 3.03 the
-denser format wins at six threads; at 1.75 it does not. The sign of the
+$S=2.43$ sits *above every loaded measurement and below the idle
+one*. At 3.03 the denser format wins at six threads; at any of the five
+contended values it does not. The sign of the
 one positive prediction therefore depends on the host being idle, which is a
 weaker statement than the table alone suggests
 (`results/sigma_six_threads.txt`). For t5b, $S=2.43$ measured against $F=1.25$;
@@ -1701,7 +1702,7 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Twenty-one claims in earlier drafts of this paper were wrong and were corrected
+Twenty-three claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a
