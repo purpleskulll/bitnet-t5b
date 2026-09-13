@@ -12,15 +12,19 @@
 #   make i2s-ref    fetch the i2_s baseline from the pinned upstream commit
 #   make clean      remove build/
 #
-# WHAT NEEDS THE FETCHED REFERENCE. Three of the four benchmarks compare
-# against upstream's own i2_s kernel, which this repository does not carry --
-# it is MIT-licensed upstream code and is extracted from a named commit by
-# tools/fetch_i2s_reference.sh instead of being redistributed here. Until that
-# script has run, bench_alu, bench_threads and bench_token cannot be built.
+# WHAT NEEDS THE FETCHED REFERENCE. Three of the eight benchmark binaries
+# compare against upstream's own i2_s kernel, which this repository does not
+# carry -- it is MIT-licensed upstream code and is extracted from a named commit
+# by tools/fetch_i2s_reference.sh instead of being redistributed here. Until
+# that script has run, bench_alu, bench_threads and bench_token cannot be built.
 # They are SKIPPED WITH A MESSAGE, never silently: a benchmark suite that
-# quietly builds three of four targets and exits 0 is how a missing baseline
+# quietly builds most of its targets and exits 0 is how a missing baseline
 # turns into a published number that was never measured against anything.
-# bench_ports is self-contained and always builds.
+#
+# The other five -- bench_ports, bench_probe_cost, bench_gemm, bench_vnni_emu
+# and bench_vnni -- need no baseline and build from a bare clone. bench_vnni
+# additionally needs a compiler that accepts a VNNI flag, and refuses to RUN on
+# a CPU without the feature; see its rule below.
 
 CC      ?= gcc
 CFLAGS  ?= -O3 -mavx2 -mfma -march=native -Wall -Wextra -std=c11
@@ -146,11 +150,25 @@ $(BIN)/bench_vnni_emu: benchmarks/bench_vnni.c $(OBJ)/ternary_t5b.o | $(OBJ)
 $(BIN)/bench_probe_cost: benchmarks/bench_probe_cost.c | $(OBJ)
 	$(CC) $(CFLAGS) -pthread $< -o $@ $(LDLIBS)
 
+# What the message may claim was built. $(BENCH) is the prerequisite list, which
+# is not the same thing: bench_vnni stays a prerequisite on a compiler with no
+# VNNI flag, where its rule prints SKIP instead of compiling. Defined here and
+# not beside BENCH because VNNI_FLAGS is a := assignment above this line and
+# would read as empty any earlier.
+BENCH_BUILT := $(if $(VNNI_FLAGS),$(BENCH),$(filter-out $(BIN)/bench_vnni,$(BENCH)))
+
+# Both lists in the message below are EXPANDED FROM THE VARIABLES, never typed
+# out: this message said `Built: bench_ports only` while four more targets that
+# need no baseline had been added under it, and a cold clone read that message
+# as the truth about its own build. A message that names targets is a second
+# copy of the target list, and the copy is the thing that rots. The padding is
+# sized for today's names, so a new benchmark makes the box ragged -- which is
+# the right failure, because the alternative is a box that lies.
 bench: $(BENCH)
 ifeq ($(HAVE_I2S),)
 	@echo ''
 	@echo '  ####################################################################'
-	@echo '  #  SKIPPED: bench_alu, bench_threads, bench_token                  #'
+	@echo '  #  SKIPPED: $(notdir $(BENCH_I2S))                    #'
 	@echo '  #                                                                  #'
 	@echo '  #  These three measure this format AGAINST upstream i2_s, and      #'
 	@echo '  #  $(I2S_REF) is not present.                          #'
@@ -163,12 +181,15 @@ ifeq ($(HAVE_I2S),)
 	@echo '  #                                                                  #'
 	@echo '  #      tools/fetch_i2s_reference.sh --from <BitNet-checkout>       #'
 	@echo '  #                                                                  #'
-	@echo '  #  Built: bench_ports only. Any comparison against i2_s made from  #'
+	@echo '  #  Built: everything that needs no baseline -- the exact list is   #'
+	@echo '  #  printed under the box. Any comparison against i2_s made from    #'
 	@echo '  #  this build would have no baseline in it.                        #'
 	@echo '  ####################################################################'
 	@echo ''
+	@echo '  built: $(notdir $(BENCH_BUILT))'
+	@echo ''
 else
-	@echo 'built all benchmarks (i2_s reference present)'
+	@echo 'built: $(notdir $(BENCH_BUILT))   (i2_s reference present)'
 endif
 
 # ------------------------------------------------------------- the fetcher ---

@@ -900,9 +900,15 @@ $\Sigma_4 = \num{1.86}$, so $S<\Sigma$ \emph{holds} at four threads and
 What does not survive is the use of the reference \code{i2\_s} kernel as a
 stand-in for \code{llama.cpp}'s real performance: it is $1.6\times$ faster than
 what the model runs, so every ratio computed against it --- the \num{2.43}
-included --- flatters the baseline. No end-to-end number changes. Matmuls are
-\SI{43.6}{\percent} of generation wall time, not the \SI{30}{\percent} estimated
-from the replay. Why the in-situ path costs $1.6\times$ its reference is not
+included --- flatters the baseline. No end-to-end number changes. The correction is
+\emph{the baseline's}, and the table above says so: the replay predicts t5b's
+matmul time to \SI{1.2}{\percent} and misses \code{i2\_s}'s by
+$1.606\times$. In share terms, matmuls are \SI{49.5}{\percent} of a baseline
+token where the replay implied \SI{30.8}{\percent}; for t5b the replay's
+\SI{44.1}{\percent} was already right against \SI{43.6}{\percent} measured.
+Stating this as a single unlabelled figure --- as an earlier draft did, taking
+t5b's in-situ share against \code{i2\_s}'s replay share --- compares two arms
+and understates how arm-specific the error is. Why the in-situ path costs $1.6\times$ its reference is not
 established; the dispatch, the accumulator fold and the per-column
 post-processing are candidates, and isolating them would mean instrumenting the
 control arm.
@@ -1040,25 +1046,57 @@ blocks run twice --- and no quality claim is made from it.
 
 \subsection{Two ratios a reader will ask about immediately}\label{sec:ratios}
 
-\paragraph{Why \SI{25}{\percent} fewer weight bytes give \SI{14}{\percent} more
-throughput.} At \num{21.9} tokens per second a token takes
-\SI{45.7}{\milli\second}, of which the weight matmuls are \textbf{\SI{43.6}{\percent}}
---- \SI{19.9}{\milli\second}. That figure is measured in situ by the cycle
-counter of \S\ref{sec:endtoend}, not inferred: the remaining
-\SI{56.4}{\percent} is attention, the KV cache, RoPE, the norms, the activation
-quantisation, thread barriers and graph overhead, all identical between the
-arms, so a \SI{25}{\percent} cut in weight bytes acts on under half the token
-and \SI{14}{\percent} is the expected order.
+\paragraph{Why \SI{19.6}{\percent} fewer weight bytes give \SI{14}{\percent}
+more throughput.} Both halves of that question come from one run. The
+\code{rdtsc} counter of \S\ref{sec:endtoend} times the matmuls of a
+\code{llama-bench} \code{tg128} invocation at four threads, and the same
+invocation's wall clock gives the throughput, so the decomposition and the ratio
+it explains are not assembled from different runs or different arms. Per token:
 
-The standalone replay of \S\ref{sec:traffic} puts the same matmuls at about
-\SI{14}{\milli\second}, or \SI{30}{\percent}. That gap is the replay's, not the
-model's: it drives
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+ & wall & matmuls & matmul share & the rest \\
+\midrule
+\code{i2\_s}  & \SI{42.80}{\milli\second} & \SI{21.18}{\milli\second} & \SI{49.5}{\percent} & \SI{21.6}{\milli\second} \\
+\textbf{t5b} & \textbf{\SI{38.32}{\milli\second}} & \textbf{\SI{16.70}{\milli\second}} & \SI{43.6}{\percent} & \SI{21.6}{\milli\second} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last column is one quantity rather than two --- attention, the KV cache,
+RoPE, the norms, the activation quantisation, thread barriers and graph
+overhead, none of which touches the weight format --- and it is identical
+between the arms, which is what makes the decomposition testable rather than
+decorative. Matmuls are \SI{49.5}{\percent} of a \emph{baseline} token; t5b
+removes \SI{21.1}{\percent} of them, which is \SI{4.48}{\milli\second}, which is
+\SI{10.5}{\percent} of the baseline token, which predicts $\num{1.117}$ end to
+end. The same run's wall clock gives $\num{5.479}/\num{4.905}=\num{1.117}$. The
+decomposition reproduces the ratio it is supposed to explain to
+\SI{0.02}{\percent}.
+
+Two figures in that chain deserve their arm stated, because taking the wrong one
+is the mistake this paragraph previously made. \SI{43.6}{\percent} is the matmul
+share \emph{after} the saving, so it answers ``what does t5b spend its time on''
+and not ``why is it faster''; the second question takes \SI{49.5}{\percent}. And
+an independent instrument agrees: the byte ratio
+$\num{521011200}/\num{418775040}=\num{1.244}$ against the clock's \num{1.268},
+two measurements of the same quantity that share no apparatus, differing by
+\SI{1.9}{\percent}.
+
+The standalone replay of \S\ref{sec:traffic} puts the baseline's matmuls at
+\SI{13.19}{\milli\second} against the \SI{21.18}{\milli\second} measured in
+situ. That gap is the replay's, not the model's: it drives
 \code{bitnet\_\allowbreak vec\_\allowbreak dot\_\allowbreak i2\_\allowbreak i8\_\allowbreak s\_\allowbreak reference}, which \S\ref{sec:endtoend}
 measures at $1.6\times$ the speed of the path \code{llama.cpp} actually
 dispatches. The replay is a lower bound on what the matmuls cost and was read as
-an estimate of it. Read as bandwidth, the generation loop uses
-\SI{11.4}{\giga\byte\per\second} of the \num{38.9} this machine delivers: it is
-not at the memory wall either way.
+an estimate of it. Read as bandwidth, the weight stream moves
+\SI{521.0}{\mega\byte} in the \SI{21.18}{\milli\second} the baseline spends in
+the matmuls --- \SI{24.6}{\giga\byte\per\second}, against \SI{25.1}{} for t5b
+over its \SI{418.8}{\mega\byte} and \SI{16.70}{\milli\second}. Equal rates in
+both arms, at \SI{64}{\percent} of the \SI{38.62}{\giga\byte\per\second} this
+machine delivers at four threads: the format changes how many bytes cross, not
+how fast they cross, and neither arm is at the wall.
 
 \paragraph{Why the file shrinks by only \SI{9}{\percent}.} The ternary tensors
 are \SI{521.0}{\mega\byte} of a \SI{1187.8}{\mega\byte} file. One f16 tensor ---

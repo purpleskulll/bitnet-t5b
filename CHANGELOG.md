@@ -32,8 +32,14 @@ float32, not to zero. Corrected in §8.
 
 **4. Matmuls were given as 30% of a token.**
 That figure came from the standalone replay, which drives the reference kernel;
-the in-situ counter of §7.4 measures 43.6%. The replay is a lower bound and was
-read as an estimate. Corrected in §7.5.
+the in-situ counter measures 49.5% for the same arm. The replay is a lower bound
+and was read as an estimate. Corrected in §7.5.
+
+*Re-stated 2026-09-13: the correction originally read "43.6%", which is the
+**t5b** arm's share against the **i2_s** arm's replay — two arms in one
+sentence. Matched, the replay predicts t5b's matmul time to 1.2% and misses
+i2_s's by 1.606×, so the error is the baseline's and the honest pair is 49.5%
+against 30.8%.*
 
 **5. Upstream's `int16` overflow was reported as "200 of 200" rows.**
 Over all thirty tensors at $K = 6912$ it is 11,998 of 12,000: with 0.78% of

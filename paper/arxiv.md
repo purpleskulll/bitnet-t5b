@@ -837,9 +837,15 @@ $\Sigma_4 = 1.86$, so $S<\Sigma$ *holds* at four threads and
 What does not survive is the use of the reference `i2_s` kernel as a
 stand-in for `llama.cpp`'s real performance: it is $1.6\times$ faster than
 what the model runs, so every ratio computed against it --- the 2.43
-included --- flatters the baseline. No end-to-end number changes. Matmuls are
-43.6% of generation wall time, not the 30% estimated
-from the replay. Why the in-situ path costs $1.6\times$ its reference is not
+included --- flatters the baseline. No end-to-end number changes. The correction is
+*the baseline's*, and the table above says so: the replay predicts t5b's
+matmul time to 1.2% and misses `i2_s`'s by
+$1.606\times$. In share terms, matmuls are 49.5% of a baseline
+token where the replay implied 30.8%; for t5b the replay's
+44.1% was already right against 43.6% measured.
+Stating this as a single unlabelled figure --- as an earlier draft did, taking
+t5b's in-situ share against `i2_s`'s replay share --- compares two arms
+and understates how arm-specific the error is. Why the in-situ path costs $1.6\times$ its reference is not
 established; the dispatch, the accumulator fold and the per-column
 post-processing are candidates, and isolating them would mean instrumenting the
 control arm.
@@ -965,25 +971,51 @@ blocks run twice --- and no quality claim is made from it.
 
 ## 7.5 Two ratios a reader will ask about immediately
 
-**Why 25% fewer weight bytes give 14% more
-throughput.**  At 21.9 tokens per second a token takes
-45.7 ms, of which the weight matmuls are **43.6%**
---- 19.9 ms. That figure is measured in situ by the cycle
-counter of §7.4, not inferred: the remaining
-56.4% is attention, the KV cache, RoPE, the norms, the activation
-quantisation, thread barriers and graph overhead, all identical between the
-arms, so a 25% cut in weight bytes acts on under half the token
-and 14% is the expected order.
+**Why 19.6% fewer weight bytes give 14%
+more throughput.**  Both halves of that question come from one run. The
+`rdtsc` counter of §7.4 times the matmuls of a
+`llama-bench` `tg128` invocation at four threads, and the same
+invocation's wall clock gives the throughput, so the decomposition and the ratio
+it explains are not assembled from different runs or different arms. Per token:
 
-The standalone replay of §7.3 puts the same matmuls at about
-14 ms, or 30%. That gap is the replay's, not the
-model's: it drives
+|  | wall | matmuls | matmul share | the rest |
+|---|---|---|---|---|
+| `i2_s` | 42.80 ms | 21.18 ms | 49.5% | 21.6 ms |
+| **t5b** | **38.32 ms** | **16.70 ms** | 43.6% | 21.6 ms |
+
+The last column is one quantity rather than two --- attention, the KV cache,
+RoPE, the norms, the activation quantisation, thread barriers and graph
+overhead, none of which touches the weight format --- and it is identical
+between the arms, which is what makes the decomposition testable rather than
+decorative. Matmuls are 49.5% of a *baseline* token; t5b
+removes 21.1% of them, which is 4.48 ms, which is
+10.5% of the baseline token, which predicts $1.117$ end to
+end. The same run's wall clock gives $5.479/4.905=1.117$. The
+decomposition reproduces the ratio it is supposed to explain to
+0.02%.
+
+Two figures in that chain deserve their arm stated, because taking the wrong one
+is the mistake this paragraph previously made. 43.6% is the matmul
+share *after* the saving, so it answers ``what does t5b spend its time on''
+and not ``why is it faster''; the second question takes 49.5%. And
+an independent instrument agrees: the byte ratio
+$521,011,200/418,775,040=1.244$ against the clock's 1.268,
+two measurements of the same quantity that share no apparatus, differing by
+1.9%.
+
+The standalone replay of §7.3 puts the baseline's matmuls at
+13.19 ms against the 21.18 ms measured in
+situ. That gap is the replay's, not the model's: it drives
 `bitnet_\allowbreak vec_\allowbreak dot_\allowbreak i2_\allowbreak i8_\allowbreak s_\allowbreak reference`, which §7.4
 measures at $1.6\times$ the speed of the path `llama.cpp` actually
 dispatches. The replay is a lower bound on what the matmuls cost and was read as
-an estimate of it. Read as bandwidth, the generation loop uses
-11.4 GB/s of the 38.9 this machine delivers: it is
-not at the memory wall either way.
+an estimate of it. Read as bandwidth, the weight stream moves
+521.0 MB in the 21.18 ms the baseline spends in
+the matmuls --- 24.6 GB/s, against 25.1  for t5b
+over its 418.8 MB and 16.70 ms. Equal rates in
+both arms, at 64% of the 38.62 GB/s this
+machine delivers at four threads: the format changes how many bytes cross, not
+how fast they cross, and neither arm is at the wall.
 
 **Why the file shrinks by only 9%.**  The ternary tensors
 are 521.0 MB of a 1187.8 MB file. One f16 tensor ---

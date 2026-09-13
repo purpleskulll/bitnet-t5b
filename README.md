@@ -65,14 +65,14 @@ gcc -O3 -mavx2 -mfma -march=native -std=c11 \
     src/test_t5b.c src/ternary_t5b.c -o test_t5b && ./test_t5b
 ```
 
-Three of the four benchmarks compare against upstream's own `i2_s` kernel, which
-this repository does **not** carry — it is MIT-licensed upstream code and is
-extracted from a pinned commit rather than redistributed here:
+Three of the eight benchmark binaries compare against upstream's own `i2_s`
+kernel, which this repository does **not** carry — it is MIT-licensed upstream
+code and is extracted from a pinned commit rather than redistributed here:
 
 ```bash
 tools/fetch_i2s_reference.sh                    # clone the pinned commit
 tools/fetch_i2s_reference.sh --from <checkout>  # or use one you already have
-make bench                                      # now builds all four
+make bench                                      # now builds the i2_s arm too
 ```
 
 The extraction is digest-checked against the exact revision every measurement in
@@ -85,10 +85,13 @@ arithmetic under the same name.
 |---|---|
 | `paper/` | the paper: Markdown, LaTeX source, compiled PDF |
 | `src/` | the format, its kernels, the ggml-facing glue, the test suite |
-| `benchmarks/` | port throughput, thread scaling, one token's weight traffic, per-kernel rate, the VNNI comparison, the instrumentation's own cost, and the upstream tiled shape used as a control |
-| `tools/` | GGUF converters and analysis: to t5b, architecture retag, depth synthesis, dead-neuron census, tensor structure, the `i2_s` reference fetcher |
+| `benchmarks/` | eight binaries from seven sources: port throughput (`bench_ports`), per-kernel rate (`bench_alu`), thread scaling (`bench_threads`), one token's weight traffic (`bench_token`), the GEMM across strip widths (`bench_gemm`), the VNNI comparison in both its real and its emulated build (`bench_vnni.c`), and the instrumentation's own cost (`bench_probe_cost`) — plus `i2s_tiled.h`, the upstream tiled shape used as a control |
+| `tools/` | GGUF plumbing and converters — to t5b, to `TQ1_0` for the prior-art comparison, architecture retag, depth synthesis, container reader, tensor inspector — the two censuses (`tensor_structure.py`, `dead_neurons.py`), the `i2_s` reference fetcher, the `.tex`→`arxiv.md` generator, and seven checks: `check_paper_paths`, `check_paper_parity`, `check_patch_parity`, `check_patch_chain`, `check_buildable`, `check_decode_claims`, `fix_patch_hunks` |
 | `integration/` | the `llama.cpp` change, as a unified diff **and** as the script that applies it |
-| `results/` | every evidence file the paper cites, each stating its own reproduction command |
+| `results/` | the evidence files; each names in its own header the binary or script that produced it, and the parameters it was given |
+| `analysis/` | the one input to `microarch_model.sh` that is not derived from the source: two hand-written VNNI loops, with the argument that the substitution is sound. **Never executed** — its own README says so in bold |
+| `*.sh` at the root | `shufdig_ab.sh` (the figures the paper quotes for the cheaper decode), `microarch_model.sh` and `second_datapoint.sh` (the two answers to the no-VNNI limit), `insitu_measure.sh` with `build_insitu.sh` (the matmul time measured in situ rather than differenced — these two need a built `llama-bench` carrying the probe and both GGUFs), `mutation_test.sh` (does the suite catch a broken kernel?). Each header opens with what the script measures |
+| `CHANGELOG.md` | every claim an earlier draft got wrong, what replaced it and how it was found; the paper's *Corrections* section points here, and `tools/check_paper_parity.py` fails if the two disagree on the count |
 | `Makefile` | builds and runs all of the above |
 | `Dockerfile.t5b` | the incremental image; needs a base image you build yourself |
 
@@ -99,6 +102,7 @@ in — see the licence note below.
 ## What is reproducible from this repository alone
 
 Everything in this list needs only a clone, a C compiler with AVX2, and Python 3.
+The `./build/…` binaries are what `make bench` puts there.
 
 | claim | how |
 |---|---|
@@ -106,22 +110,33 @@ Everything in this list needs only a clone, a C compiler with AVX2, and Python 3
 | 1.600 bits/weight, and what padding costs at real tensor widths | printed by `make test` |
 | the accumulator provably wraps and the answer is still right | part of `make test` |
 | which execution port binds | `make bench && taskset -c 5 ./build/bench_ports` |
+| the strip width at which the cheaper decode stops paying | `./build/bench_gemm` — t5b's GEMM against itself, no baseline needed |
+| what the in-situ cycle counter costs | `./build/bench_probe_cost` — and why the counter is per-thread |
+| the VNNI kernels compute the right answer | `./build/bench_vnni_emu` — runs anywhere, no VNNI needed |
 | the ggml-facing glue still matches the kernel signatures | `make` builds `build/ggml_t5b_glue.o` |
 | the `llama.cpp` change, in full, reviewable | `integration/t5b-integration.patch` |
 | the GGUF container reader | `python3 tools/gguf_io.py` — self-checks with no model |
 | the tensor-structure estimator's own statistics | `python3 tools/tensor_structure.py --self-test` |
+| the decode's stated arithmetic, over all 256 bytes | `python3 tools/check_decode_claims.py` |
+| the paper against this tree: its paths, its two renderings, its correction count | `python3 tools/check_paper_paths.py`, `check_paper_parity.py` |
+| the patch against the script that applies it, and every shipped source against the `Makefile` | `python3 tools/check_patch_parity.py`, `check_patch_chain.py`, `check_buildable.py` |
+
+One benchmark needs no model and no fetched reference either — only a CPU this
+project does not have, which is why it is listed apart rather than above:
+
+| claim | how |
+|---|---|
+| VNNI against AVX2, timed | `./build/bench_vnni` — needs `avx512vnni` or `avx_vnni`; exits 3 otherwise |
 
 With `tools/fetch_i2s_reference.sh` run first (needs the pinned upstream tree,
-by clone or by path — no model, no build of `llama.cpp`):
+by clone or by path — no model, no build of `llama.cpp`). These three, and only
+these three, are the ones `make bench` names as skipped without it:
 
 | claim | how |
 |---|---|
 | t5b against upstream `i2_s`, one token's weight traffic | `./build/bench_token 6 3` |
 | arithmetic surplus against core count | `./build/bench_threads 0.5` |
 | per-kernel rate, instruction and spill counts | `./build/bench_alu` |
-| the VNNI kernels compute the right answer | `./build/bench_vnni_emu` — runs anywhere, no VNNI needed |
-| what the in-situ cycle counter costs | `./build/bench_probe_cost` — and why the counter is per-thread |
-| VNNI against AVX2, timed | `./build/bench_vnni` — needs `avx512vnni` or `avx_vnni`; exits 3 otherwise |
 
 ## What is **not** reproducible from this repository alone, and why
 
@@ -151,32 +166,44 @@ is here and its **inputs** are not.
 
 3. **`src/ggml_i2s_ternary.{c,h}`.** Generated, not stored. See below.
 
-4. **`results/phase_status.txt`**, which the paper's evidence table names, is not
-   in this repository. It belongs to a different phase of a larger private
-   project and is not part of this work.
+4. **The `TQ1_0` comparison.** `results/tq1_0_comparison.txt` measures this
+   format against `llama.cpp`'s own sub-two-bit ternary type — the nearest prior
+   art — on one machine, through one binary. `tools/gguf_to_tq1_0.py` is here
+   and rewrites the same ternary values out of the `i2_s` file into `TQ1_0`'s
+   blocks exactly: no second download and no `llama-quantize`, because both
+   types store the same trits under the same radix-3 idea. The three rotated
+   `llama-bench` invocations that produce the speed half of that file need the
+   checkpoint and a built binary, as in 1 above.
 
 5. **The absolute perplexity figure of 96.82** is high for a 2 B model and is
    reported as an identity check between the two formats, not as a quality
    claim. It is the same number for both arms; that identity is the finding.
 
-## Where the paper's evidence table points, and where the file actually is
+## The paper's paths are this repository's paths
 
-The paper was written against a private tree with a different layout. The paths
-in its evidence table map onto this repository like this:
+No mapping table is needed here any more, and this section used to be one. The
+paper is written in a private tree whose layout differs — `src_modifications/`
+where this has `src/`, `scripts/` where this has the root — and it used to carry
+those paths into print, so a reader who cloned this repository and went looking
+for `src_modifications/bench/bench_ports.c` found nothing. A reviewer did
+exactly that. The paper now names the path a reader clones:
+`benchmarks/bench_ports.c`, `src/ternary_t5b.{c,h}`,
+`results/thread_headroom.txt`, `tools/dead_neurons.py`.
 
-| the paper says | in this repository |
-|---|---|
-| `src_modifications/bench/bench_ports.c` | `benchmarks/bench_ports.c` |
-| `src_modifications/bench/bench_token.c` | `benchmarks/bench_token.c` |
-| `src_modifications/ternary_t5b.{c,h}` | `src/ternary_t5b.{c,h}` |
-| `src_modifications/tests/` | `src/test_t5b.c`, `src/test_t10.c` |
-| `src_modifications/ggml_i2s_ternary.c` | generated by `tools/fetch_i2s_reference.sh` |
-| `scripts/apply_integration.py` | `integration/apply_integration.py` |
-| `Dockerfile.t5b` | `Dockerfile.t5b` (incremental — read its header first) |
-| `results/phase_status.txt` | not in this repository; see above |
+The gate is `tools/check_paper_paths.py`, and it is the reason that mapping
+could be deleted rather than maintained:
 
-Every other path the paper names — `results/*.txt`, `tools/*.py` — is where it
-says it is.
+```bash
+python3 tools/check_paper_paths.py    # exit 0 when every path resolves
+```
+
+It reads **both** renderings — the `.tex` that gets submitted and the generated
+`arxiv.md` — collects every repository-relative path and every bare filename
+either one names, and fails if one does not exist here or is spelled in the
+private layout. Paths that are deliberately absent are declared in the check's
+own `EXTERNAL` table with where each does live — the generated `i2_s` reference,
+upstream `llama.cpp` and `ggml` sources, the converted GGUF, the NTRU reference
+implementation — so an absence has to be asserted rather than merely tolerated.
 
 ## Honest limits
 
