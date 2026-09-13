@@ -408,8 +408,14 @@ it is the exhaustive figure the implementation and its tests pin:
 The tightest case first fails at $x=485$, exactly twice the largest legal packed
 byte. All four quotients are therefore exact for every input the code can
 produce, each costs one `vpmulhuw`, and --- crucially --- the four are
-mutually independent, so the depth-five chain collapses to depth one and the
-multiply port rather than latency becomes the limit. Note $M=811$ is not the
+mutually independent, so the depth-five chain collapses to depth one and latency
+ceases to bind. What binds instead is the total vector-operation count rather
+than the multiply port: §7 measures the loop at
+67% of its multiply-port ceiling, so that port is idle a third of
+the time, and §7.7 finds that removing six vector operations of
+which only two are multiply-port buys 1.2254, above what either the
+multiply-port ratio (1.18) or the total-op ratio (1.16) predicts
+alone. Note $M=811$ is not the
 canonical $\lceil 2^{16}/81\rceil=810$; the implementation uses the larger
 constant, which has the smaller exactness range (first failure at 485
 rather than 806) and is still twice what the code can produce. The
@@ -487,16 +493,18 @@ references per loop) costs less than the amortisation gains.
 
 Let baseline $A$ and candidate $B$ store the same weights at
 $\beta_{A}>\beta_{B}$ with $\mu_{A}<\mu_{B}$ binding-port instructions per
-multiply--accumulate. Write
+multiply--accumulate, and let $A_{A}>A_{B}$ be the arithmetic rates the two
+kernels actually attain with memory taken out of the measurement
+(§7). Write
 
 $$
-F=\frac{\beta_{A}}{\beta_{B}},\qquad S=\frac{\mu_{B}}{\mu_{A}},
+F=\frac{\beta_{A}}{\beta_{B}},\qquad S=\frac{A_{A}}{A_{B}},
 $$
 
 and define the *surplus* of the baseline,
 
 $$
-\Sigma=\frac{\beta_{A}/(8B)}{\mu_{A}/\pi}=\frac{\pi\beta_{A}}{8B\mu_{A}} .
+\Sigma=\frac{\beta_{A}/(8B)}{1/A_{A}}=\frac{A_{A}\beta_{A}}{8B} .
 $$
 
 If $\Sigma\le 1$ the baseline is arithmetic-bound and no $S>1$ can win. If
@@ -506,8 +514,23 @@ $$
 \boxed{\;S<\Sigma\;}
 $$
 
-in which case it runs a factor $\min(F,\Sigma/S)$ faster. The condition is a
-property of two hardware rates, not of the code, and both are measurable.
+in which case it runs a factor $\min(F,\Sigma/S)$ faster.
+
+**$A$ is the measured rate, not the port ceiling, and the difference
+decides cells.**
+(1) bounds the arithmetic term by $N\mu/\pi$, and it is tempting
+to read $A_{A}=\pi/\mu_{A}$ straight off the port count. That is the ceiling, not
+the rate, and neither kernel reaches it: §7 measures the
+baseline at 63% of its 130.9\,GMAC/s ceiling and the packed
+kernel at 67% of its 50.5. Substituting ceilings would give
+$S=\mu_{B}/\mu_{A}=2.60$ against the 2.43 measured, and would raise
+every $\Sigma$ below by a factor $1/0.63$ --- to 2.12 at one thread
+and 3.39 at four --- which reverses the prediction at two and at four
+threads, where a loss is what §7.3 measures. Both terms are
+therefore taken from measured kernel rates throughout, and $\pi/\mu$ appears
+only as the ceiling each kernel fails to reach. The condition is a property of a
+kernel pair on a machine rather than of the instruction set alone, and both of
+its terms are measurable in minutes.
 
 **The criterion is not new; the measurement is.**
 Equation 1 of Zukowski et al. [zukowski] selects between an I/O-bound and a
@@ -1387,8 +1410,8 @@ and the EOS id to be supplied through `-{}-override-kv` because its own
 metadata is wrong, so an absolute perplexity from it is at least as likely to
 reflect a tokenisation artefact as the model.
 
-The second we found while auditing this work and state because it is concrete:
-the graph `llama.cpp` builds for this architecture is probably not the
+The second we found while auditing this work, and it is not a suspicion but a
+measurement: the graph `llama.cpp` builds for this architecture is not the
 model's. `build_ffn` is called with `LLM_FFN_SILU` in
 `src/models/bitnet.cpp`, whereas the reference implementation released with
 the checkpoint applies a squared rectifier ---
@@ -1396,10 +1419,27 @@ the checkpoint applies a squared rectifier ---
 settle it: it declares `general.architecture = bitnet-b1.58` and carries no
 activation key at all, so the per-architecture default in the loader is the only
 thing choosing, and `LLM_FFN_RELU_SQR` exists beside it in
-`src/llama-graph.h` and is used by five other architectures. We have not
-rebuilt with it and therefore do not claim which activation the quoted
-96.8243 reflects; we claim only that the number has two independent
-reasons to be untrustworthy and that neither reaches the comparison.
+`src/llama-graph.h` and is used by five other architectures.
+
+Substituting it is one token of diff, and we ran it. Over the same forty chunks
+of WikiText-2:
+
+|  | `i2_s` | **t5b** |
+|---|---|---|
+| `LLM_FFN_SILU` (as built) | $96.8243\pm3.55673$ | $96.8243\pm3.55673$ |
+| `LLM_FFN_RELU_SQR` | $16.7482\pm0.50521$ | $16.7482\pm0.50521$ |
+
+A factor of 5.78. The 96.8243 quoted above is therefore a property
+of a mis-built graph and not of this checkpoint, which is the second and larger
+of the two reasons it is not reported as a result.
+
+*The identity survives the change, and that was the check that could have
+failed.* The two arms agree to six significant figures under *both*
+activations --- they have always run the same graph, so a wrong activation
+cancels exactly, and a divergence here would have meant something other than the
+activation was wrong. Nothing else in this paper is affected: every rate, every
+density figure and the bit-identity result are comparisons between two formats
+under one loader.
 
 **Engineering.**  The blocked matrix--matrix kernel spills 181 times per
 loop at its chosen width; narrower widths spill less and measure slower. The
@@ -1444,12 +1484,13 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Eight claims in earlier drafts of this paper were wrong and were corrected
-before submission --- among them the novelty of the packing, two statements
-about dead-neuron removal, and the assertion that a run on VNNI hardware would
-settle §9.1. Each is listed with what replaced it and how it
-was found in `CHANGELOG.md` in the repository below, kept there rather than
-here so that this document states what holds.
+Eleven claims in earlier drafts of this paper were wrong and were corrected
+before submission --- among them the novelty of the packing, the novelty of the
+depth-one extraction arithmetic, the novelty of the fused digit-plane
+contraction, two statements about dead-neuron removal, and the assertion that a
+run on VNNI hardware would settle §9.1. Each is listed with
+what replaced it and how it was found in `CHANGELOG.md` in the repository
+below, kept there rather than here so that this document states what holds.
 
 ---
 

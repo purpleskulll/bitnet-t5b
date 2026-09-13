@@ -147,6 +147,47 @@ def numbers(text: str, is_tex: bool) -> Counter:
     return out
 
 
+# The paper states how many corrections there have been and points at
+# CHANGELOG.md for the list. That is one number living in two files, maintained
+# by hand, and it drifted the first time anyone looked: the paper said "Eight"
+# while the CHANGELOG had reached eleven, because items 9, 10 and 11 were
+# appended without anyone touching a sentence three hundred lines away in
+# another file. A count that appears twice needs a check or it drifts again.
+WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+         "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+         "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15}
+
+
+def correction_count() -> int:
+    """How many numbered corrections CHANGELOG.md actually carries, or -1."""
+    ch = ROOT / "CHANGELOG.md"
+    if not ch.exists():
+        return -1
+    return len(re.findall(r"^\*\*(\d+)\.", ch.read_text(), re.M))
+
+
+def check_correction_count() -> list:
+    """The count each rendering states, against the count the CHANGELOG holds."""
+    n = correction_count()
+    if n < 0:
+        return []
+    bad = []
+    for doc in (TEX, MD):
+        if not doc.exists():
+            continue
+        m = re.search(r"\b([A-Za-z]+) claims in earlier drafts", doc.read_text())
+        if not m:
+            bad.append(f"{doc.name}: no 'N claims in earlier drafts' sentence")
+            continue
+        said = WORDS.get(m.group(1).lower())
+        if said is None:
+            bad.append(f"{doc.name}: cannot read '{m.group(1)}' as a number")
+        elif said != n:
+            bad.append(f"{doc.name}: says {m.group(1)} ({said}), "
+                       f"CHANGELOG.md has {n}")
+    return bad
+
+
 def main() -> int:
     for p in (MD, TEX):
         if not p.exists():
@@ -159,11 +200,21 @@ def main() -> int:
     only_md = sorted(set(md) - set(tex))
     only_tex = sorted(set(tex) - set(md))
 
+    drift = check_correction_count()
+
     print("PAPER PARITY: arxiv.md against bitnet-baremetal-t5b.tex")
+    print(f"  corrections: CHANGELOG.md has {correction_count()}, "
+          f"both renderings agree" if not drift else
+          f"  corrections: CHANGELOG.md has {correction_count()}, THE PAPER DOES NOT AGREE")
     print(f"  distinct numeric claims   md {len(md):4d}   tex {len(tex):4d}")
     print(f"  shared                    {len(set(md) & set(tex)):4d}")
 
-    if not only_md and not only_tex:
+    if drift:
+        print(f"\n  The correction count has drifted ({len(drift)}):")
+        for b in drift:
+            print(f"    {b}")
+
+    if not only_md and not only_tex and not drift:
         print("\nPASS -- every numeric claim appears in both renderings.")
         print("  This does NOT prove the prose agrees. It proves the failure")
         print("  that has happened three times has not happened again.")
@@ -177,6 +228,11 @@ def main() -> int:
         print(f"\n  In the .tex but NOT in arxiv.md ({len(only_tex)}):")
         for t in only_tex:
             print(f"    {t}")
+
+    if drift and not (only_md or only_tex):
+        print("\nFAIL -- the paper states a correction count that CHANGELOG.md")
+        print("  does not hold. One of the two was edited without the other.")
+        return 1
 
     print("\nFAIL -- the two renderings carry different numbers.")
     print("  The .tex is what gets submitted. If a claim is only in the .md,")
