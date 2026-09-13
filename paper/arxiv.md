@@ -161,16 +161,35 @@ a new quantisation scheme, and it composes with all three.
          sets.} We found this only after the fact, and record it here rather than
          in a footnote, as with the packing above.
 
-         What is left, and what §4 actually claims, is what happens
-         *after* the extraction. NTRU materialises every coefficient into a
-         coefficient array and defers the modulo-three reduction to a separate
-         branch-free sweep; the kernel here recombines the two 16-bit views into
-         byte lanes and feeds the digit planes straight into the
-         `vpmaddubsw` contraction, so that no weight is ever materialised in a
-         register as a value and decompression and computation are one pass. The
-         depth-one extraction costs more multiply-port operations than the serial
-         form and buys latency; §5 gives the condition under
-         which that is the right trade. No head-to-head measurement against
+         NTRU nevertheless materialises every coefficient into a coefficient array
+         and defers the modulo-three reduction to a separate branch-free sweep,
+         where the kernel here feeds the digit planes straight into the
+         contraction. **That distinction does not rescue a novelty claim
+         either, and the counter-example is the kernel this paper positions itself
+         against.** `TQ1_0`'s NEON path derives all four scalings
+         $3,9,27,81$ of the loaded byte with one `vmulq_u8` each, every one
+         of them from the *original* vector rather than from its predecessor,
+         extracts the digits table-free by multiplying by three and keeping the two
+         bits above eight, and passes them directly to `vdotq_s32`. That is
+         depth one, table-free, and without materialisation, and it has shipped
+         since pull request \#8151. Its AVX2 path does the same without
+         materialisation but at depth *two*: lacking an 8-bit multiply it
+         chains the scalings as shift-and-add, deriving $27$ from $3$ and $81$ from
+         $9$ --- except in its four-element tail, which reaches depth one through
+         `_mm256_mullo_epi16` against a vector of $1,3,9,27$.
+
+         What is therefore left is one instantiation, not a mechanism: the depth-one
+         form in the AVX2 *main* path, reached through the high half of a
+         16-bit multiply. Upstream states that as an open question in the file
+         itself --- `// TODO: can _mm256_mulhi_epu16 be faster even if
+         16-bits?`, `arch/x86/quants.c:1406` --- and §4
+         answers it with a measurement. We verified every sentence of this
+         paragraph against the vendored kernel at `390c307` rather than
+         against a description of it.
+
+         The depth-one extraction costs more multiply-port operations than the
+         serial form and buys latency; §5 gives the condition
+         under which that is the right trade. No head-to-head measurement against
          Spectra's kernel was made: their figures are from a Mac M4 and an EPYC
          part, ours from one Zen 2 host.
 3. A *measurement* of the profitability condition

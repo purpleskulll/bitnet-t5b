@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Ten claims in earlier drafts of the paper were wrong and were corrected before
+Eleven claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -110,6 +110,35 @@ paper does not close the entropy direction, because its format space bottoms
 out at INT4 and the strings `ternary`, `BitNet` and `1.58` appear zero times in
 its source.*
 
+**11. "Contraction on the digit planes, so no weight is ever materialised" was
+claimed as what distinguishes this kernel.**
+It is not, and the counter-example is the kernel this paper positions itself
+against, in the codebase it integrates into. `TQ1_0`'s NEON path
+(`arch/arm/quants.c`) derives all four scalings 3, 9, 27, 81 of the loaded byte
+with one `vmulq_u8` each — every one from the *original* vector, not from its
+predecessor — extracts the digits table-free by multiplying by three and keeping
+the two bits above eight, and passes them straight to `vdotq_s32`. Depth one,
+table-free, no materialisation, shipped since PR #8151. Its AVX2 path is the
+same without materialisation but at depth *two*, because AVX2 has no 8-bit
+multiply and the scalings are chained as shift-and-add — except in its
+four-element tail, which reaches depth one via `_mm256_mullo_epi16`.
+
+So mechanism (3) is prior art on both instruction sets and mechanism (2) is
+prior art in substance. What survives is one instantiation: the depth-one form
+in the AVX2 *main* path through the high half of a 16-bit multiply, which
+upstream itself names as an open question in the file — `// TODO: can
+_mm256_mulhi_epu16 be faster even if 16-bits?`, `arch/x86/quants.c:1406`. §1.1
+now claims that and nothing more.
+
+*Found by a domain sweep that was looking for something else entirely: it
+returned zero surviving application leads out of twenty-four, and its most
+consequential output was this correction to our own prior-art inventory. Every
+sentence above was verified against the vendored kernel at `390c307` here,
+not taken from the agent that raised it. That is four repetitions of the same
+failure — the packing, the recommendation, the extraction arithmetic, and now
+the fused contraction — and the pattern is worth naming: each time, the thing
+believed novel was already in a codebase this work had read part of.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -127,7 +156,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is ten. It was called seven until this list was written out — items 2
+The count is eleven. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above
