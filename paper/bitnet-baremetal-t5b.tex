@@ -167,8 +167,9 @@ footnote.
 
 What this paper contributes is therefore narrower: a per-tensor scale model that
 removes the block overhead and is drop-in for the \code{i2\_s} path of
-\code{bitnet.cpp}, an interleave identical to \code{i2\_s}'s so the access
-pattern is unchanged, a decode of four \emph{independent} magic multiplies, a
+\code{bitnet.cpp}, an interleave that is \code{i2\_s}'s at two bits and
+\code{TQ1\_0}'s at \num{1.600}, adopted rather than designed, so the access
+pattern is unchanged from either, a decode of four \emph{independent} magic multiplies, a
 column-blocked matrix--matrix kernel, an explicit and measurable condition for
 when any of this pays, and an end-to-end evaluation on a real ternary checkpoint
 against the format that ships with it.
@@ -389,9 +390,24 @@ b_{j}=\sum_{k=0}^{4}c\!\left(w_{32k+j}\right)3^{k},
 \qquad c(w)=w+1\in\{0,1,2\}.
 \label{eq:pack}
 \end{equation}
-The interleave $32k+j$ is \code{i2\_s}'s own layout extended from four digits to
-five, so digit plane $k$ addresses 32 \emph{consecutive} activations and the
-memory access pattern is unchanged from the format replaced. The code is
+The interleave $32k+j$ is not ours at either width. \code{i2\_s} uses it with
+four two-bit fields: \code{dequantize\_row\_i2\_s} sends bits $6-2k$ of byte
+$j$ to weight $32k+j$, and its AVX2 dot pairs those four shifts with activation
+loads at $+0,+32,+64,+96$. \code{TQ1\_0} uses it with \emph{five} base-3
+digits, in the same file the open question of \S\ref{sec:contrib} comes from:
+\code{quantize\_row\_tq1\_0\_ref} packs \code{x[m + n*32]} under the comment
+\emph{``5 elements per byte, along 32 bytes''}, and its AVX2 dot contracts five
+digit planes of one 32-byte load against activations at
+$+0,+32,+64,+96,+128$ --- the same stride on the same instruction set. What
+differs is smaller than it looks and matters for \S\ref{sec:kernel}: both
+upstream formats put the earliest weight in the \emph{most} significant field
+where \eqref{eq:pack} puts it in the least, and \code{TQ1\_0} stores
+$\lceil 256v/243\rceil$ rather than the base-3 value $v$ --- which is why its
+digits come out by a different arithmetic, and why the exactness argument of
+\S\ref{sec:kernel} applies here and not there. We adopt the interleave rather
+than invent it, and state it because it is what the drop-in claim rests on:
+digit plane $k$ addresses 32 \emph{consecutive} activations, so the access
+pattern is unchanged from \emph{both}. The code is
 injective since $3^{5}=243\le 256$, and
 \begin{equation}
 b_{j}\;\le\;2\sum_{k=0}^{4}3^{k}=2\cdot 121=242 .
@@ -872,7 +888,37 @@ The crossing matches~\eqref{eq:condition} with $S=\num{2.43}$ and the $\Sigma$
 of \S\ref{sec:condition}. Across all eight paired six-thread observations the
 median is $1.12\times$, seven of eight favouring t5b; best against best, noting
 \code{i2\_s} does not improve past four threads, is \SI{13.00}{\milli\second}
-against \SI{11.71}{\milli\second}.
+against \SI{11.71}{\milli\second}, or $\num{1.110}\times$.
+
+\paragraph{The six-thread cell is above the model's own ceiling, and the excess
+is not a density effect.} \eqref{eq:condition} caps the gain at
+$\min(F,\Sigma/S)$, which at six threads is
+$\min(\num{1.25},\ \num{3.03}/\num{2.43})=\num{1.248}$, or \num{1.244} if
+$F$ is the byte ratio this replay actually streams. The row's
+$\num{1.355}\times$ stands \SI{8.6}{\percent} above the first and
+\SI{8.9}{\percent} above the second, so taking the achieved ratio does not
+rescue it --- it lowers the ceiling. \emph{Nothing} about weight traffic can:
+$\min(F,\Sigma/S)\le F$ at every thread count, and reproducing
+$\num{1.355}\times$ from bytes alone would take \num{1.476} bits per weight,
+below this checkpoint's own order-zero entropy of \eqref{eq:entropy}. No
+lossless re-encoding of these weights reaches it.
+
+The two figures are not the same quantity. $\min(F,\Sigma/S)$ is a quotient of
+two \emph{roofline} times, each arm at the larger of its arithmetic and
+transport bounds; the row is a quotient of two measurements. At one, two and
+four threads neither arm sits more than \SI{7}{\percent} above its own floor
+and the modelled ratio tracks the measured one to within \SI{9}{\percent} --- at
+four threads \num{0.767} against \num{0.780}. At six it does not:
+\code{i2\_s}'s transport floor is \SI{13.41}{\milli\second}, essentially
+unchanged from \SI{13.49}{} at four because $B$ is flat there, and the
+\SI{15.15}{\milli\second} in this row stands \SI{13.0}{\percent} above it
+while its t5b counterpart stands \SI{3.7}{\percent} above t5b's. That is the
+widest divergence in the eight paired observations. Taking the medians instead
+gives $\num{1.244}\times\num{1.064}/\num{1.207}=\num{1.097}$ against a
+measured median of \num{1.120}, and best-against-best gives
+$\num{1.110}\times$. \eqref{eq:condition} predicts the \emph{crossing}, and
+the crossing is where it says; the size of the six-thread win is one draw's
+slack above a floor, not a quantity the model claims to give.
 
 \subsection{End to end in \code{llama.cpp}}\label{sec:endtoend}
 
@@ -1704,7 +1750,7 @@ worth applying rather than an accident of the one part that produced it.
 
 \section*{Corrections}
 
-Thirteen claims in earlier drafts of this paper were wrong and were corrected
+Fifteen claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a

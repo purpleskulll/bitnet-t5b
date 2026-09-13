@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Thirteen claims in earlier drafts of the paper were wrong and were corrected before
+Fifteen claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -205,6 +205,40 @@ measurements do not conflict, they are about different objects, and the real
 defects were a dangling forward reference and a cost claim the source file had
 already refuted.*
 
+**14. The interleave was called "i2_s's own layout extended from four digits to
+five".**
+The extension was `TQ1_0`'s, in the same file the paper quotes its open TODO
+from: `quantize_row_tq1_0_ref` packs `x[m + n*32]` under the comment *"5
+elements per byte, along 32 bytes"*, and the AVX2 dot contracts five digit
+planes of one 32-byte load against activations at +0, +32, +64, +96, +128 — the
+same stride, the same instruction set, five digits. §3.1 now says the interleave
+is adopted at both widths rather than extended at one, and states what does
+differ, because it is smaller than it looks and load-bearing: the digit order is
+reversed, and `TQ1_0` stores ceil(256v/243) where this format stores the base-3
+value v, which is exactly why the exactness argument of §4 applies here and not
+there.
+
+**15. The six-thread traffic row was quoted without noticing it exceeds the
+model's own ceiling.**
+(4) caps the gain at min(F, Σ/S) = 1.248 at six threads; the row is 1.355, which
+is 8.6 % above it — and 8.9 % above the tighter ceiling the achieved byte ratio
+gives, so substituting the honest F makes it worse rather than better. The
+excess cannot be a density effect at all: reproducing 1.355× from bytes would
+take 1.476 bits per weight, below this checkpoint's own measured entropy of
+1.5603, so no lossless re-encoding reaches it.
+
+The cause is that the two figures are not the same quantity — one is a quotient
+of roofline times, the other of two measurements — and at six threads i2_s's
+draw stands 13.0 % above its own transport floor against 3.7 % for its t5b
+counterpart, the widest divergence in the eight paired observations. On medians
+the model gives 1.097 against a measured 1.120, and best-against-best 1.110.
+§7.3 now says the condition predicts the crossing, not the size of the win.
+
+*Both found by agents sent to check unresolved findings from a cold read, and in
+both cases the agent corrected the reviewer as well: the proposed cause of the
+overshoot — that i2_s regresses from four threads to six — does not survive the
+eight observations, which show it flat, exactly as the model predicts.*
+
 ---
 
 Three of these were found by a reviewer and the rest by checks written
@@ -222,7 +256,7 @@ afterwards. Those checks are in the repository and run as gate steps:
 | `tools/check_decode_claims.py` | the decode's stated arithmetic, re-derived over all 256 bytes |
 | `mutation_test.sh` | twenty-one injected kernel defects, eighteen killed, three proved equivalent |
 
-The count is thirteen. It was called seven until this list was written out — items 2
+The count is fifteen. It was called seven until this list was written out — items 2
 and 3 are two distinct false statements about the same paragraph, made at
 different times, and treating them as one was itself a small piece of
 under-reporting — and nine only after item 9, which none of the checks above
