@@ -153,9 +153,16 @@ def numbers(text: str, is_tex: bool) -> Counter:
 # while the CHANGELOG had reached eleven, because items 9, 10 and 11 were
 # appended without anyone touching a sentence three hundred lines away in
 # another file. A count that appears twice needs a check or it drifts again.
-WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-         "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
-         "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15}
+# Spelled out to thirty, and a digit form accepted too. The first version of
+# this stopped at fifteen and fired on "Seventeen" with the message "the
+# correction count has drifted" -- which was false: the counts agreed and the
+# PARSER had run out. A check whose failure message names the wrong cause is
+# worse than one that stays silent, so the two are now distinguished below.
+WORDS = {w: i + 1 for i, w in enumerate(
+    "one two three four five six seven eight nine ten eleven twelve thirteen "
+    "fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one "
+    "twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven "
+    "twenty-eight twenty-nine thirty".split())}
 
 
 def correction_count() -> int:
@@ -179,9 +186,14 @@ def check_correction_count() -> list:
         if not m:
             bad.append(f"{doc.name}: no 'N claims in earlier drafts' sentence")
             continue
-        said = WORDS.get(m.group(1).lower())
+        word = m.group(1)
+        said = WORDS.get(word.lower())
+        if said is None and word.isdigit():
+            said = int(word)
         if said is None:
-            bad.append(f"{doc.name}: cannot read '{m.group(1)}' as a number")
+            bad.append(f"{doc.name}: PARSER LIMIT, not a drift -- cannot read "
+                       f"'{word}' as a number. Extend WORDS; the counts may "
+                       f"well agree.")
         elif said != n:
             bad.append(f"{doc.name}: says {m.group(1)} ({said}), "
                        f"CHANGELOG.md has {n}")
