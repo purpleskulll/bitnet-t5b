@@ -1,0 +1,46 @@
+==============================================================================
+ SIGMA AT SIX THREADS IS NOT ONE NUMBER
+ 2026-09-13, Ryzen 5 3600, build/bench_threads, five runs, 0.40 s per case
+==============================================================================
+
+WHY THIS EXISTS. Sigma at six threads is the single number that makes the
+paper's headline prediction come out positive: S = 2.43 < Sigma_6 = 3.03. That
+3.03 is ONE run, taken on a quiet box. A cold statistical review objected that
+the file the paper cites for it, results/thread_headroom.txt, already records
+the same binary returning a much lower figure under load -- so the number the
+argument turns on had never been repeated.
+
+Repeated here, five times, with the load recorded each time. The tool's own
+definition: "surplus = cache rate / dram rate, per core", which is exactly the
+paper's Sigma.
+
+### run 1   load 3.80 3.86 4.18
+  T=6  per-core    23.11 GMAC/s  aggregate    34.66 GB/s  surplus 1.69x
+### run 2   load 5.70 4.32 4.32
+  T=6  per-core    23.53 GMAC/s  aggregate    35.29 GB/s  surplus 1.65x
+### run 3   load 6.92 4.69 4.44
+  T=6  per-core    22.42 GMAC/s  aggregate    33.63 GB/s  surplus 1.75x
+### run 4   load 6.95 4.86 4.51
+  T=6  per-core    22.78 GMAC/s  aggregate    34.17 GB/s  surplus 2.38x
+### run 5   load 6.23 4.86 4.51
+  T=6  per-core    21.75 GMAC/s  aggregate    32.63 GB/s  surplus 1.92x
+
+WHAT THIS SHOWS, and what it does NOT.
+
+  Sigma_6 measured here: 1.65, 1.69, 1.75, 1.92, 2.38   (median 1.75)
+  Sigma_6 in the paper:  3.03                            (one run, quiet box)
+  S = 2.43
+
+It does NOT refute 3.03. These runs were taken at load average 3.8 to 7.0 with
+other work on the machine, so a six-thread arm is not getting six cores, and the
+cache arm -- the numerator -- suffers more from that than the bandwidth-limited
+dram arm does. A contended measurement is a lower bound on a quiet one.
+
+What it does show is that Sigma_6 is not a property of the part alone, and that
+S = 2.43 sits INSIDE the range it takes. At 3.03 the format wins at six threads;
+at 1.75 it does not. The sign of the paper's only positive prediction cell
+therefore depends on the machine being quiet, and the paper has to say so
+rather than quote 3.03 as though it were a constant.
+
+WHAT WOULD SETTLE IT: the same five runs on an idle box. Not available here
+today; the measurement is cheap and is the first thing to do when one is.

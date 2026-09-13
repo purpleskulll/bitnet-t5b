@@ -2,22 +2,33 @@
 title: Sub-Two-Bit Ternary Weight Storage with Table-Free Arithmetic Decoding for CPU Inference
 abstract: |
   Ternary (1.58-bit) large language models are stored in practice at two bits per
-  weight, 26% above the information content of a ternary symbol. We
-  show that the residual redundancy is recoverable on commodity x86 CPUs without
-  lookup tables and without decompressing weights into a wider representation. We
-  introduce **t5b**, a radix-3 code that places five ternary values in one
-  byte at exactly 1.600 bits per weight, and an AVX2 kernel that recovers
-  all five digits from the packed byte using four *independent*
-  `vpmulhuw` instructions per 16-bit view of the byte --- eight per 32-byte
-  block --- exploiting the fact that a five-trit byte is
-  bounded by 242 and therefore lies well inside the exactness range of the
-  corresponding magic multipliers. The kernel contracts directly on the digits
-  with `vpmaddubsw`, so no weight is ever materialised. We give a roofline
-  argument identifying the condition under which a denser format is profitable ---
-  the ratio between a core's multiply-port throughput and its share of memory
-  bandwidth --- and verify it by measuring both quantities directly. Integrated
-  into `llama.cpp` as a distinct `ggml` type alongside the existing
-  two-bit format, t5b reduces the shipped `BitNet-b1.58-2B-4T` checkpoint
+  weight, 26% above the information content of a ternary symbol.
+  **The code that removes that redundancy is not new, and neither is the way
+  to decode it.** Five ternary values as the base-3 digits of one byte at
+  1.600 bits per weight is `llama.cpp`'s `TQ1_0`, is published
+  with a correctness theorem as Spectra 1.1's `TQ1` [spectra], appears a
+  year earlier in statistical genomics [miraculix] and fifteen years earlier
+  in heuristic search [breyerkorf]; recovering all five digits
+  *independently* from the packed byte, table-free, is NTRU's since
+  2019 [ntru] and is what `TQ1_0`'s own NEON path does; contracting on
+  the digit planes without materialising a weight is `TQ1_0`'s on both
+  instruction sets; carrying the scale per tensor rather than per block was
+  `block_q1_3`, on the pull request that became `TQ1_0`; and the
+  condition under which a denser format pays is Equation 1 of Zukowski et
+  al. [zukowski], twenty years old. §1.1 states each
+  concession and what remains beside it.
+  What this paper offers instead is measurement. We build **t5b** --- the
+  same construction at a block length of $160=32\times5$, which takes no remainder
+  byte, with the scale in `i2_s`'s existing 32-byte tail so that no graph
+  node changes --- and integrate it into `llama.cpp` as a distinct
+  `ggml` type alongside the existing two-bit format, then measure what it is
+  worth. The AVX2 realisation of the depth-one decode through the high half of a
+  16-bit multiply is the one instantiation upstream does not have, and names as an
+  open question in its own source; we answer it with a measurement, and the answer
+  is that it is not faster. The profitability condition is measured rather than
+  assumed, one level down the memory hierarchy from where it was first stated,
+  with both of its terms taken from the part the kernel runs on. So measured, t5b
+  reduces the shipped `BitNet-b1.58-2B-4T` checkpoint
   from 1.10 GiB to 1.00 GiB and yields, under
   `llama-bench` *at four threads*, $1.132\times$ prompt and
   $1.143\times$ generation throughput, faster in five of five invocations. The re-encoding is lossless and
@@ -613,7 +624,23 @@ $B$ is a core's *share*, not the socket's. Running the baseline kernel at
 Arithmetic scales $5.6\times$ across six cores, per core falling only
 6%. Transport scales $2.5\times$ and is flat from four cores to
 six. The surplus therefore grows with core count for reasons independent of any
-kernel. For t5b, $S=2.43$ measured against $F=1.25$;
+kernel.
+
+**$\Sigma_{6}$ is not a constant, and $S$ sits inside its range.**
+The six-thread entry is the only cell in which the condition is satisfied, so it
+carries the argument, and the figure above is a single run on a quiet host.
+Repeating it five times at load averages of 3.8–7.0 gives
+1.65, 1.69, 1.75, 1.92 and 2.38, with a median of
+1.75. Those runs do not refute 3.03: under contention a
+six-thread arm does not get six cores, and the cache-resident numerator suffers
+more from that than the bandwidth-limited denominator, so a contended
+measurement is a lower bound. What they establish is that $\Sigma_{6}$ is a
+property of the machine's occupancy as well as of the part, and that
+$S=2.43$ lies *inside* the interval it spans. At 3.03 the
+denser format wins at six threads; at 1.75 it does not. The sign of the
+one positive prediction therefore depends on the host being idle, which is a
+weaker statement than the table alone suggests
+(`results/sigma_six_threads.txt`). For t5b, $S=2.43$ measured against $F=1.25$;
 by (17) the code should lose at one, two and four threads and
 win at six, which is what §7.3 observes, at $0.53\times$,
 $0.62\times$, $0.78\times$ and $1.35\times$ respectively.
