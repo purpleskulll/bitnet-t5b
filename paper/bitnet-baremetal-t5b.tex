@@ -201,6 +201,17 @@ ternary, together with a decode-fused kernel. No weight value changes; the
 output is bit-identical. It is therefore neither pruning nor weight sharing nor
 a new quantisation scheme, and it composes with all three.
 
+It is also not a cache format, and that boundary is where the largest remaining
+memory sits. \S\ref{sec:ratios} measures the part of a token this work does not
+touch at \SI{21.6}{\milli\second}, the larger half, and the key/value cache
+lives entirely inside it. Hariri et al.~\cite{kvkeys} act on that half rather
+than this one: they derive from the spectral and Frobenius norms of the key and
+value projections that keys deserve more bits than values, and allocate four and
+two, keeping up to \SI{98.3}{\percent} of a uniform allocation's accuracy at
+lower memory. The two address disjoint tensors --- weights here, activations
+there --- so they compose without interacting, which is a statement about scope
+and not a measured result; we have not run the combination.
+
 \subsection{Prior art, and what is not claimed here}\label{sec:priorart}
 
 Six constructions this work is built from belong to someone else. They are
@@ -1270,6 +1281,28 @@ $\num{521011200}/\num{418775040}=\num{1.244}$ against the clock's \num{1.268},
 two measurements of the same quantity that share no apparatus, differing by
 \SI{1.9}{\percent}.
 
+\paragraph{What is in the untouched half, and who does act on it.} The
+\SI{21.6}{\milli\second} is identical in both arms by construction: this work
+changes how ternary \emph{weights} are stored and decoded, and nothing else in
+the graph. Attention scores, the norms, the sampler and --- the largest
+memory-resident item among them --- the key/value cache are all outside it. That
+is the honest reason a weight format and a cache format compose rather than
+compete, and it is worth stating precisely, because the tempting shorter
+argument is wrong: t5b does \emph{not} leave the attention tensors alone. All
+\num{210} ternary tensors are re-encoded, \code{attn\_q} among them
+(\code{results/tensor\_structure.txt}). What it leaves alone is the cache, which
+holds activations and never weights.
+
+Hariri et al.~\cite{kvkeys} act on exactly that half. They show the key
+projections carry larger spectral and Frobenius norms than the value
+projections, and allocate bits accordingly --- four to keys, two to values ---
+retaining up to \SI{98.3}{\percent} of the accuracy of a uniform allocation at
+lower memory. The two results are orthogonal in the strict sense that they share
+no tensor: a reader combining them would shrink the weight side by the
+\SI{102.2}{\mega\byte} of \S\ref{sec:results} and the cache side by their
+allocation, and neither measurement here predicts the other. We have not run the
+combination, and say so rather than implying a composition we did not test.
+
 The standalone replay of \S\ref{sec:traffic} puts the baseline's matmuls at
 \SI{13.19}{\milli\second} against the \SI{21.18}{\milli\second} measured in
 situ, for the reason \S\ref{sec:endtoend} gives: it drives
@@ -2120,6 +2153,10 @@ zero.
   D.~Wu. \emph{Sherry: Hardware-Efficient 1.25-Bit Ternary Quantization via
   Fine-grained Sparsification}. arXiv:2601.07892, 2026.
 
+\bibitem{kvkeys} M.~Hariri, A.~Luo, W.~Chen, T.~Zhang, Q.~Wang, X.~Han,
+  V.~Chaudhary. \emph{Quantize What Counts: More for Keys, Less for Values}.
+  Findings of the Association for Computational Linguistics: ACL 2026,
+  pp.~26393--26420.
 \bibitem{litespark} \emph{Litespark Inference on Consumer CPUs: Custom SIMD
   Kernels for Ternary Neural Networks}. arXiv:2605.06485.
 \bibitem{deepcompression} S.~Han, H.~Mao, W.~J.~Dally. \emph{Deep Compression:

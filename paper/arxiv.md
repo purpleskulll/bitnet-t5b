@@ -144,6 +144,17 @@ ternary, together with a decode-fused kernel. No weight value changes; the
 output is bit-identical. It is therefore neither pruning nor weight sharing nor
 a new quantisation scheme, and it composes with all three.
 
+It is also not a cache format, and that boundary is where the largest remaining
+memory sits. §7.5 measures the part of a token this work does not
+touch at 21.6 ms, the larger half, and the key/value cache
+lives entirely inside it. Hariri et al. [kvkeys] act on that half rather
+than this one: they derive from the spectral and Frobenius norms of the key and
+value projections that keys deserve more bits than values, and allocate four and
+two, keeping up to 98.3% of a uniform allocation's accuracy at
+lower memory. The two address disjoint tensors --- weights here, activations
+there --- so they compose without interacting, which is a statement about scope
+and not a measured result; we have not run the combination.
+
 ## 1.1 Prior art, and what is not claimed here
 
 Six constructions this work is built from belong to someone else. They are
@@ -1190,6 +1201,28 @@ $521,011,200/418,775,040=1.244$ against the clock's 1.268,
 two measurements of the same quantity that share no apparatus, differing by
 1.9%.
 
+**What is in the untouched half, and who does act on it.**  The
+21.6 ms is identical in both arms by construction: this work
+changes how ternary *weights* are stored and decoded, and nothing else in
+the graph. Attention scores, the norms, the sampler and --- the largest
+memory-resident item among them --- the key/value cache are all outside it. That
+is the honest reason a weight format and a cache format compose rather than
+compete, and it is worth stating precisely, because the tempting shorter
+argument is wrong: t5b does *not* leave the attention tensors alone. All
+210 ternary tensors are re-encoded, `attn_q` among them
+(`results/tensor_structure.txt`). What it leaves alone is the cache, which
+holds activations and never weights.
+
+Hariri et al. [kvkeys] act on exactly that half. They show the key
+projections carry larger spectral and Frobenius norms than the value
+projections, and allocate bits accordingly --- four to keys, two to values ---
+retaining up to 98.3% of the accuracy of a uniform allocation at
+lower memory. The two results are orthogonal in the strict sense that they share
+no tensor: a reader combining them would shrink the weight side by the
+102.2 MB of §7 and the cache side by their
+allocation, and neither measurement here predicts the other. We have not run the
+combination, and say so rather than implying a composition we did not test.
+
 The standalone replay of §7.3 puts the baseline's matmuls at
 13.19 ms against the 21.18 ms measured in
 situ, for the reason §7.4 gives: it drives
@@ -1950,6 +1983,7 @@ zero.
 - G. Gerogiannis, S. Eyerman, E. Georganas, W. Heirman, J. Torrellas. *DECA: A Near-Core LLM Decompression Accelerator Grounded on a 3D Roofline Model*. MICRO-58, 2025. doi:10.1145/3725843.3756073. Preprint arXiv:2505.19349.
 - J. I. Aliaga, H. Anzt, T. Gr\"utzmacher, E. S. Quintana-Ort\'i, A. E. Tom\'as. *Compression and load balancing for efficient sparse matrix-vector product on multicore processors and graphics processing units*. Concurrency and Computation: Practice and Experience, 2021. doi:10.1002/cpe.6515.
 - H. Huang, D. Wu, Q. Hu, G. Yu, J. Yang, J. Zhu, X. Liu, D. Wu. *Sherry: Hardware-Efficient 1.25-Bit Ternary Quantization via Fine-grained Sparsification*. arXiv:2601.07892, 2026.
+- M. Hariri, A. Luo, W. Chen, T. Zhang, Q. Wang, X. Han, V. Chaudhary. *Quantize What Counts: More for Keys, Less for Values*. Findings of the Association for Computational Linguistics: ACL 2026, pp. 26393--26420.
 - *Litespark Inference on Consumer CPUs: Custom SIMD Kernels for Ternary Neural Networks*. arXiv:2605.06485.
 - S. Han, H. Mao, W. J. Dally. *Deep Compression: Compressing Deep Neural Networks with Pruning, Trained Quantization and Huffman Coding*. ICLR, 2016. arXiv:1510.00149.
 - T. Zhang et al. *70\% Size, 100\% Accuracy: Lossless LLM Compression for Efficient GPU Inference via Dynamic-Length Float*. arXiv:2504.11651, 2025.
