@@ -1892,6 +1892,35 @@ activation was wrong. Nothing else in this paper is affected: every rate, every
 density figure and the bit-identity result are comparisons between two formats
 under one loader.
 
+Both of those columns are one tree and two formats neither of which upstream
+maintains, which is a weaker position than it first appears, so we repeated the
+pair on \code{ggml-org/llama.cpp} at \code{bbdd9f2} using \code{TQ1\_0} ---
+\code{llama.cpp}'s own ternary format, and the prior art of \S\ref{sec:contrib}.
+Reaching it took two steps, both recorded in
+\code{results/activation\_upstream\_master.txt}: \code{i2\_s} is not an upstream
+type, and the fork writes an architecture string, \code{bitnet-b1.58}, that
+upstream does not register, so the file was retagged to \code{bitnet} after
+checking that the fork's subclass overrides only its layer-count-to-label map
+and that the two tensor sets agree exactly.
+\begin{center}
+\begin{tabular}{llrr}
+\toprule
+tree & format & \code{SILU} & \code{RELU\_SQR} \\
+\midrule
+this paper's fork   & \code{i2\_s} & \num{96.8243} & \num{16.7482} \\
+this paper's fork   & t5b          & \num{96.8243} & \num{16.7482} \\
+upstream \code{bbdd9f2} & \code{TQ1\_0} & \num{96.6913} & \num{16.7750} \\
+\bottomrule
+\end{tabular}
+\end{center}
+The \code{SILU} arms agree to \SI{0.14}{\percent} and the \code{RELU\_SQR} arms
+to \SI{0.16}{\percent} across three quantisations whose only shared component is
+the graph, and both upstream arms repeat bit-identically with the load order
+alternated. A quantisation defect cannot produce that pattern. We note the
+absolute levels are not this checkpoint's under either activation --- every one
+of these runs logs a missing pre-tokenizer type --- so what the table supports is
+the ratio and not the level.
+
 \paragraph{Engineering.} The blocked matrix--matrix kernel spills 181 times per
 loop at its chosen width; narrower widths spill less and measure slower. The
 type identifier used (43) is not reserved by upstream, so a stock

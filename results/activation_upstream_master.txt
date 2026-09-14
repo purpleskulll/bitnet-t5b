@@ -1,0 +1,123 @@
+==================================================================
+ THE ACTIVATION DEFECT, MEASURED ON UPSTREAM MASTER
+ A THIRD QUANTISATION AND A SECOND TREE
+==================================================================
+
+Date:       2026-09-14
+Tree:       ggml-org/llama.cpp at bbdd9f2, shallow clone, PLUS the two-file
+            patch in pr/llamacpp-bitnet-hidden-act/bitnet-hidden-act.patch
+Build:      cmake 4.4.3 (pip wheel, extracted to /tmp -- no system package),
+            gcc 13.3.0, -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF
+Host:       AMD Ryzen 5 3600, avx2 fma, no VNNI
+Model:      models/ggml-model-tq1_0.gguf (md5 e8daa0829dae...), retagged
+            bitnet-b1.58 -> bitnet, 1,106,386,496 bytes
+Corpus:     models/wikitext-2-raw/wiki.test.raw, 40 chunks of 512 tokens
+Command:    llama-perplexity -m <model> -f <corpus> -c 512 -b 512 -t 6
+              --chunks 40 [--override-kv bitnet.hidden_activation=str:relu2]
+
+WHY THIS FILE EXISTS
+--------------------
+results/activation_mismatch.txt established the defect against the
+microsoft/BitNet fork's pinned llama.cpp, at two quantisations (i2_s and t5b).
+Two objections survive that:
+
+  1. It is one tree. A defect measured only where a fork put it is a claim
+     about the fork.
+  2. Both formats there are this project's or the fork's. Neither is one
+     upstream maintains.
+
+Both are answered here. This is upstream master, and TQ1_0 is llama.cpp's own
+ternary format -- the one this project's paper concedes prior art to. Nothing
+in this measurement belongs to this project except the retag and the patch.
+
+GETTING THE FILE TO LOAD AT ALL, and it is a finding in its own right
+--------------------------------------------------------------------
+Upstream master cannot open this repository's GGUFs, for two independent
+reasons:
+
+  i2_s        is not an upstream type. No match for I2_S in ggml.h.
+  bitnet-b1.58 is not an upstream architecture. llama-arch.cpp:88 registers
+              { LLM_ARCH_BITNET, "bitnet" } and nothing else, and
+              gguf-py/gguf/constants.py:1321 writes "bitnet". The fork writes
+              "bitnet-b1.58", which also prefixes every architecture-scoped
+              key, so --override-kv on general.architecture alone cannot
+              rescue it.
+
+TQ1_0 answers the first. tools/gguf_retag_arch.py answers the second, and the
+assertion it requires was checked rather than waved through:
+
+  the fork's llama_model_bitnet_b158 OVERRIDES ONLY load_arch_hparams, and
+  the only difference is the layer-count-to-label map (it adds 24 -> 700M and
+  30 -> 2B). load_arch_tensors and build_arch_graph are inherited from
+  llama_model_bitnet unchanged.
+      .verify/insitu/3rdparty/llama.cpp/src/models/bitnet.cpp:173-182
+
+  and the tensor sets agree exactly -- 13 kinds, identical multiplicities,
+  fork against upstream:
+      ATTN_K 2  ATTN_NORM 1  ATTN_OUT 2  ATTN_Q 2  ATTN_SUB_NORM 1
+      ATTN_V 2  FFN_DOWN 2  FFN_GATE 2  FFN_NORM 1  FFN_SUB_NORM 1
+      FFN_UP 2  OUTPUT_NORM 1  TOKEN_EMBD 1
+
+So the relabel asserts something true. The one behavioural consequence is
+cosmetic and is stated rather than hidden: upstream's map has no case for 30
+layers, so it reports LLM_TYPE_UNKNOWN for this model.
+
+THE MEASUREMENT
+---------------
+Four runs, both arms twice, load order alternated between the pairs.
+
+  ARM A   default, no key present -> LLM_FFN_SILU    (current upstream)
+  ARM B   --override-kv bitnet.hidden_activation=str:relu2 -> LLM_FFN_RELU_SQR
+
+          run 1                        run 2 (order reversed)
+  ARM A   96.6913 +/- 3.55122          96.6913 +/- 3.55122
+  ARM B   16.7750 +/- 0.50684          16.7750 +/- 0.50684
+
+  factor  96.6913 / 16.7750 = 5.764
+
+BIT-IDENTICAL ON REPEAT, both arms. That is the expected result for a
+deterministic forward pass over a fixed corpus and it is recorded because its
+absence would have meant something was wrong with the harness rather than with
+the graph.
+
+AGAINST THE FORK, and this is the point of the file
+---------------------------------------------------
+                          SILU        RELU_SQR    factor
+  fork, i2_s              96.8243     16.7482     5.781
+  fork, t5b               96.8243     16.7482     5.781
+  upstream master, TQ1_0  96.6913     16.7750     5.764
+
+Three quantisations, two trees, two maintainers. The SILU arms agree to 0.14 %
+and the RELU_SQR arms to 0.16 %. A defect that reproduces across formats whose
+only shared component is the graph IS in the graph. No quantisation path can
+produce that pattern.
+
+WHAT THE ABSOLUTE NUMBERS ARE NOT
+---------------------------------
+Both arms log "missing pre-tokenizer type, using: 'default'" -- the same
+tokenizer-metadata artefact results/perplexity_t5b.txt already records. It is
+present in BOTH arms and in all four runs, so it cannot move the ratio, but it
+means neither column should be quoted as this checkpoint's perplexity against
+another model. The ratio is the claim. The level is not.
+
+Nor is the level comparable to the fork's to more than the two digits above:
+different quantisation, different tree.
+
+WHAT IT DOES TO THE PATCH
+-------------------------
+Arm B is the patch working end to end, not a compile. Without the patch the
+override has nowhere to land -- master reads no activation key for this
+architecture at all. The two arms differ in exactly one thing a user can set,
+and the graph changes accordingly.
+
+RAW OUTPUT
+----------
+The forty per-chunk running estimates for each run are in /tmp/ppl_arms.txt of
+the session that produced this; the final lines were:
+
+  ARM A: PPL = 96.6913 +/- 3.55122   (chunk 1 alone: 46.8488)
+  ARM B: PPL = 16.7750 +/- 0.50684   (chunk 1 alone: 14.3421)
+
+The single-chunk pair was run first as a smoke test, before the forty-chunk
+pairs, and is recorded because it is what established that the override reaches
+the graph at all.

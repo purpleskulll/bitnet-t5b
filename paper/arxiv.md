@@ -1777,6 +1777,31 @@ activation was wrong. Nothing else in this paper is affected: every rate, every
 density figure and the bit-identity result are comparisons between two formats
 under one loader.
 
+Both of those columns are one tree and two formats neither of which upstream
+maintains, which is a weaker position than it first appears, so we repeated the
+pair on `ggml-org/llama.cpp` at `bbdd9f2` using `TQ1_0` ---
+`llama.cpp`'s own ternary format, and the prior art of §1.2.
+Reaching it took two steps, both recorded in
+`results/activation_upstream_master.txt`: `i2_s` is not an upstream
+type, and the fork writes an architecture string, `bitnet-b1.58`, that
+upstream does not register, so the file was retagged to `bitnet` after
+checking that the fork's subclass overrides only its layer-count-to-label map
+and that the two tensor sets agree exactly.
+
+| tree | format | `SILU` | `RELU_SQR` |
+|---|---|---|---|
+| this paper's fork | `i2_s` | 96.8243 | 16.7482 |
+| this paper's fork | t5b | 96.8243 | 16.7482 |
+| upstream `bbdd9f2` | `TQ1_0` | 96.6913 | 16.7750 |
+
+The `SILU` arms agree to 0.14% and the `RELU_SQR` arms
+to 0.16% across three quantisations whose only shared component is
+the graph, and both upstream arms repeat bit-identically with the load order
+alternated. A quantisation defect cannot produce that pattern. We note the
+absolute levels are not this checkpoint's under either activation --- every one
+of these runs logs a missing pre-tokenizer type --- so what the table supports is
+the ratio and not the level.
+
 **Engineering.**  The blocked matrix--matrix kernel spills 181 times per
 loop at its chosen width; narrower widths spill less and measure slower. The
 type identifier used (43) is not reserved by upstream, so a stock
