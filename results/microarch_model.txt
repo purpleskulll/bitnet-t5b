@@ -1,8 +1,41 @@
+RECORD NOTE -- READ THIS FIRST (added 2026-09-14)
+==================================================================
+
+THE THIRD SIGNIFICANT DIGIT OF THIS TABLE IS A PROPERTY OF THE TRANSLATION
+UNIT THE LOOP WAS COMPILED IN, NOT OF THE TARGET.
+
+The public copy of this file prints znver3/4/5 as i2_s 3.77 cyc, S = 2.441,
+where the table below prints 3.76 and 2.449. Both reproduce TODAY, with the
+same llvm-mca 23.1.0 and the same -mcpu. The cause is neither the target nor
+a stale file: scripts/microarch_model.sh compiles whichever i2_s reference
+ITS OWN tree holds, and the two translation units differ -- the private
+src_modifications/ggml_i2s_ternary.c holds seven functions and 275 vector
+instructions, the public src/ggml_i2s_ternary.c four and 61. Extracting both
+inner loops with the script's own awk and diffing them gives TWENTY
+instructions each, an IDENTICAL opcode multiset and IDENTICAL memory offsets,
+differing only in register allocation and instruction order. llvm-mca prices
+that pure reordering at 0.01 cycles on znver3/4/5 and at ZERO on znver2,
+icelake-server and sapphirerapids.
+
+SIZE: 0.33 % on S, 2.449 against 2.441. The claim this table is cited for --
+that S does not run away on newer parts, against a spread of 2.10 to 2.50
+across the six targets -- is unaffected at that magnitude. What the note
+costs is the third digit: this static model resolves S to about two.
+
+THE PRINTED NUMBERS BELOW ARE NOT ADJUSTED. They are what the script emits
+in this tree today, and adjusting them would make the file disagree with its
+own Reproduce line.
+
+Full derivation, with the per-target llvm-mca figures and the loop diff:
+results/microarch_translation_unit.txt
+
+==================================================================
+
 ==================================================================
  S ACROSS MICROARCHITECTURES -- static model, calibrated
 ==================================================================
 
-Reproduce:  microarch_model.sh
+Reproduce:  scripts/microarch_model.sh
 Model:      llvm-mca 23.1.0
 Anchor:     i2_s 81.93 GMAC/s, t5b 33.74 GMAC/s, S = 2.428
             (results/weight_density.txt, this Zen 2 host, bench_alu)
@@ -25,9 +58,9 @@ Anchor:     i2_s 81.93 GMAC/s, t5b 33.74 GMAC/s, S = 2.428
 --- (a) THE SAME AVX2 CODE, on parts this project cannot run on ---
   target              t5b cyc   i2_s cyc        S
   znver2                18.01       5.76    2.501
-  znver3                11.51       3.77    2.441
-  znver4                11.51       3.77    2.441
-  znver5                11.51       3.77    2.441
+  znver3                11.51       3.76    2.449
+  znver4                11.51       3.76    2.449
+  znver5                11.51       3.76    2.449
   icelake-server        14.02       5.34    2.098
   sapphirerapids        14.52       5.01    2.317
 
@@ -59,6 +92,6 @@ Anchor:     i2_s 81.93 GMAC/s, t5b 33.74 GMAC/s, S = 2.428
 
 --- what is still open ---
   A static model is not a measurement. The one number that would settle
-  the VNNI question is a run of second_datapoint.sh on any part
+  the VNNI question is a run of scripts/second_datapoint.sh on any part
   with avx512vnni or avx_vnni. Nothing in this file substitutes for it.
 ==================================================================

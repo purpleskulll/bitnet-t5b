@@ -1,0 +1,205 @@
+==============================================================================
+ DELETING THE FOURTH MAGIC MULTIPLY: the measurement
+ 2026-09-13, Ryzen 5 3600 (Zen 2, AVX2+FMA, no VNNI), quiet box
+==============================================================================
+
+WHAT IS BEING MEASURED
+
+q3 = floor(x/27) is at most 9 for every byte, so it is a NIBBLE, and vpshufb can
+index it. Three constant 16-entry tables then give, from q3 alone:
+
+    d4 = floor(q3/3)      (= floor(x/81), by the nested-floor identity)
+    d3 = q3 mod 3
+    3*q3                   (for d2 = q2 - 3*q3)
+
+The /81 multiplier 811 and its two vpmulhuw disappear, and with them the whole
+q4 register. The file format does not change: same five base-3 digits per byte,
+same 1.60755 bits/weight, same packed bytes, so no repack and no compatibility
+break. The variant is behind -DTERNARY_T5B_SHUFDIG.
+
+This came out of a research wave as its one surviving proposal. The wave's own
+refuter measured it and reported numbers; everything below was measured here,
+independently, with a harness written here rather than with the one it left.
+
+THE BASELINE ARM IS PROVED TO BE THE SHIPPED KERNEL, NOT ASSUMED TO BE
+
+The prototype file carries both arms behind #ifdef. Compiled without the -D it
+emits an inner loop BYTE-IDENTICAL to src_modifications/ternary_t5b.c's. So the
+comparison is today's kernel against itself plus one change, and not against a
+five-day-old copy of itself.
+
+    gcc -O3 -mavx2 -mfma -march=native -std=c11     (the Makefile's own CFLAGS)
+
+                 instructions   vector ops   multiply-port   vpmulhuw  vpshufb
+    baseline          46            43            13             8         0
+    SHUFDIG           40            37            11             6         3
+
+43 is the figure ternary_t5b.c's header records, so this reproduces it exactly.
+NOTE THE FLAGS: without -march=native the same source gives 42 and 36. An
+op-count acceptance criterion without its flags is not a criterion --
+scripts/microarch_model.sh omits -march=native and the Makefile sets it, so the
+two disagree by two ops on identical source.
+
+CORRECTNESS, at the real artefact and not at a model of it
+
+    src/test_t5b.c linked against the SHUFDIG object:
+        97,529 checks, 0 failures
+
+That includes 73,277 column-blocked GEMM cells compared against scalar, 3,523
+row-tiled GEMV rows, the fold-boundary cases, and the all-zero row identity.
+Separately, an exhaustive comparison over all 256 byte values (including the
+thirteen foreign ones above 242) shows the two decoders produce identical digit
+planes, and that both agree with the true base-3 digits on x <= 242.
+
+THE GEMV ARITHMETIC RATE -- 15 interleaved rounds, pinned to the quietest core
+
+Arms alternate order round by round, the ratio is formed per round, and the
+median is reported, so a single bad round cannot carry the result. The i2_s
+kernel is IDENTICAL CODE in both arms and is measured in the same runs as an
+internal control: whatever it shows is drift, not effect.
+
+    round    t5b base    t5b shuf     ratio      i2_s control
+      1        32.97       40.40     1.2254        0.9878
+      2        33.14       40.48     1.2215        1.0100
+      3        32.93       40.55     1.2314        1.0142
+      4        33.01       20.09     0.6086        0.9942     <-- see below
+      5        33.02       40.10     1.2144        1.0037
+      6        32.90       40.44     1.2292        1.0394
+      7        32.74       40.06     1.2236        1.0047
+      8        32.79       40.05     1.2214        0.9986
+      9        32.70       40.29     1.2321        1.0027
+     10        32.82       40.47     1.2331        1.0089
+     11        32.84       40.26     1.2259        0.9989
+     12        32.61       39.96     1.2254        1.0240
+     13        32.65       40.41     1.2377        1.0322
+     14        32.58       40.40     1.2400        0.9935
+     15        33.01       39.97     1.2108        0.9901
+
+    t5b   median 1.2254x   min 0.6086   max 1.2400   faster in 14 of 15
+    CTL   median 1.0037x   min 0.9878   max 1.0394   i2_s, same code both arms
+    exact two-sided sign test                        p = 0.00098
+
+ROUND 4 IS MINE AND IS LEFT IN. While the run was going I started a second
+benchmark on the same pinned core, and it stole the core during the shuf arm's
+t5b window -- the i2_s figure from the SAME process is 79.03, i.e. normal, so
+the contention was local to that window. It is recorded rather than deleted
+because it is the only honest demonstration of why this design takes a median:
+one round at 0.61 moves the median by nothing.
+
+THE CONTROL IS THE POINT. The i2_s kernel is byte-identical in the two binaries
+and still ranges 0.988 to 1.039 round to round. That 5% band IS this
+measurement's noise floor, and 1.2254 sits far outside it.
+
+THE WIDE PATH GAINS NOTHING, AND THE REASON IS MEASURABLE
+
+No benchmark in this repository drives ternary_t5b_gemm_avx2 in isolation, so
+the wide path had never been measured here at all. The refuting agent reported
+0.9965x at NC=8 -- prompt processing gains NOTHING -- which is the single
+most consequential thing it said, because it decides whether the improvement may
+be quoted next to pp512. benchmarks were written for this and swept the strip
+width. Nine interleaved rounds, n = 6912, the model's hidden dimension:
+
+      cols      base med     shuf med     ratio    shuf faster
+        1         34.95        40.57     1.1608        9 of 9
+        4         66.71        75.80     1.1363        9 of 9
+        8         78.04        77.55     0.9937        3 of 9
+       16         78.08        78.19     1.0014        4 of 9
+       32         78.11        77.87     0.9969        4 of 9
+       64         77.88        77.54     0.9956        5 of 9
+
+The agent was right and its number reproduces: 0.9937 here against its 0.9965.
+
+THE SHAPE IS THE FINDING, and it was not in the agent's report. The GEMM decodes
+each 32-byte block ONCE and spreads it across `cols` activation columns, so the
+decode is amortised over the strip width. By cols = 8 BOTH arms saturate at the
+same ~78 GMAC/s, and from there on 3 to 5 wins out of 9 is a coin flip. That
+saturation at a common rate is the signature of a shared bottleneck: past width
+8 the cost is the contraction and the activation stream, and the decode -- the
+only thing this change touches -- has been amortised away entirely.
+
+So the improvement is confined to narrow strips by construction:
+
+    token generation, batch 1, one column   -> gains
+    prompt processing, wide strips          -> gains nothing, and cannot
+
+Any write-up that puts a speedup next to pp512 is wrong. tg128 is the only
+headline number this can move.
+
+IT IS FASTER THAN THE PAPER'S OWN MODEL PREDICTS, AND THE MIX SAYS WHY
+
+ternary_t5b.c's header states that the loop is bound by the TOTAL vector op
+count and that "the only thing that moves it is removing ops". Taken literally
+that predicts 43/37 = 1.1622. The multiply-port model predicts 13/11 = 1.1818.
+The measurement is 1.2254, above both.
+
+The instruction mix of the two loops, counted in the emitted code:
+
+                                  baseline   SHUFDIG
+      vpmulhuw                        8          6
+      vpmaddubsw                      5          5
+        multiply port, total         13         11
+      vpsllw / vpsrlw                 9          6
+      vpshufb                         0          3
+        shift+shuffle pair, total     9          9
+      vpsubb                          4          3
+      vpor                            4          3
+      vpaddw                          9          7
+      vpand, vmovdqu                  3          3
+
+The multiply port falls from 13 to 11 while the shift-and-shuffle pair stays at
+exactly 9: three shifts are replaced by three shuffles, which is the trade the
+proposal makes, and it is neutral on that pair BY CONSTRUCTION. So the
+distribution across ports flattens.
+
+Backing the rates out: the baseline sustains 43 ops / 19.7 cycles = 2.18 vector
+ops per cycle. The kernel header states the same quotient as 2.19 --
+src_modifications/ternary_t5b.c:212, "43 / 19.7 = 2.19 vector ops per cycle" --
+so this is not the figure the header records, it is the same division rounded
+the other way: 43/19.7 is 2.1827. Nothing here turns on the third digit; both
+readings are the ~2 vector ops per cycle that a Zen 2 part can issue, which is
+the point the header is making. At 1.2254x the block takes 16.08 cycles, so
+SHUFDIG sustains 37 / 16.08 = 2.30. The remaining ops issue BETTER, not merely
+fewer.
+
+STATED AS WHAT IT IS: the flatter port distribution is CONSISTENT with the extra
+5%, and it is not isolated by this measurement. Two candidate mechanisms --
+better issue from a flatter mix, and a shorter dependency chain on two of the
+five digit planes -- are not separated here, and neither is register pressure,
+though that one can be ruled out: both loops spill ZERO times.
+
+What is established is narrower and still worth having: the header's model is
+incomplete. Removing ops is not the only lever; which port they came off
+matters too.
+
+WHAT IT DOES TO S, AND TO THE PROFITABILITY CONDITION
+
+    measured here today:  S = 78.30 / 32.85 = 2.384   (canonical 2.4283; this
+                          box runs ~2% friendlier than the recorded figures)
+    with the shuffle:     S = 2.384 / 1.2254 = 1.945
+    applied to the canonical pair: 2.4283 / 1.2254 = 1.982
+
+The condition is S < Sigma, with Sigma measured at 1.35 / 1.63 / 1.78 / 1.86 at
+one to four threads and 3.03 at six.
+
+    NOT ONE CELL FLIPS. At six threads it paid before and pays now. At one to
+    four threads it failed before and fails now.
+
+What changes is the margin, and only at the top of that range: the four-thread
+cell goes from 31% short (2.4283 against 1.86) to 6.5% short (1.982 against
+1.86). The remaining gap is smaller than the improvement just made.
+
+This is the honest framing and it should be used: the change helps exactly where
+the format was LOSING and does nothing where it was already winning, because at
+six threads t5b already sits at the memory knee and more arithmetic cannot be
+spent.
+
+END TO END, as a bound rather than a claim
+
+The in-situ counters put the matmul at 43.6% of a generated token and the
+contraction at 94.4% of the matmul, so 41.2% of the token. Applying the full
+1.2254 to that fraction gives tg128 25.78 -> 27.9 t/s, +8.2%.
+
+THAT IS AN UPPER BOUND AND NOT A PREDICTION. The 1.2254 is an arithmetic rate
+with memory taken out; in situ the matmul is partly memory-bound, so the
+realised share is smaller. Whoever quotes an end-to-end number must measure it
+in situ rather than derive it here.

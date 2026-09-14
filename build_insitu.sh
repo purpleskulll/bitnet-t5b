@@ -46,10 +46,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # footnote names it as the reproduction path for a whole subsection -- the exact
 # failure ("someone looks for the gate, cannot find it, and then doubts
 # everything else") this project has a rule about.
-if [ ! -d "$ROOT/src_modifications" ] && [ ! -d "$ROOT/src" ] \
-   && [ -d "$(dirname "${BASH_SOURCE[0]}")/src" ]; then
-    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
+#
+# SECOND FAILURE MODE, and the reason this no longer consults the parent at all.
+# The previous form corrected ROOT only when the parent had NEITHER src/ nor
+# src_modifications/. So a clone with any directory named src/ sitting BESIDE it
+# -- another checkout, a stray build tree -- made that test true, the correction
+# never fired, and every path below kept resolving outside the repository. Here
+# that surfaces as "no llama.cpp tree at .../.verify/rec" and exit 4, which
+# sends the reader to run prefetch_sources.sh again when the sources were never
+# the problem. The same hole was reproduced in a scratch tree in the sibling
+# script shufdig_ab.sh, where it exits 2 claiming a file is missing that is in
+# plain view.
+#
+# Asking the script's OWN directory cannot be fooled by a neighbour: a neighbour
+# is, by definition, not where the script is.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SELF/src" ] || [ -d "$SELF/src_modifications" ]; then ROOT="$SELF"; fi
 SRC="$ROOT/.verify/rec"
 MODE="${1:-script}"
 OUT="$ROOT/.verify/$([ "$MODE" = --patch ] && echo patchtest || echo insitu)"

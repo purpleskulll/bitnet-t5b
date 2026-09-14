@@ -1,3 +1,52 @@
+!! CORRECTION, 2026-09-14 -- THE ABSOLUTE NUMBERS BELOW ARE A MIS-BUILT GRAPH !!
+==============================================================================
+
+  SUPERSEDED: section 3 ("THE ABSOLUTE NUMBER") and section 4 ("AGAINST ANOTHER
+  MODEL") in full, including "A factor of 11.7. That is the honest calibration
+  this project did not have, and it is not close." and the closing "a 2.41 B
+  ternary model is a long way behind a 3 B quantised one on this measure."
+  Both sections are marked where they begin. Nothing is deleted.
+
+  WHY. llama.cpp builds this architecture's FFN with LLM_FFN_SILU
+  (src/models/bitnet.cpp) while the reference released with the checkpoint
+  computes squared_relu(x1) * x3. The GGUF carries no activation key of any
+  kind -- 24 metadata keys, no match for activ, relu, silu, act_ or gelu -- so
+  the loader's per-architecture default is the only thing choosing it. 96.8243
+  is the perplexity of that mis-built graph, not of this checkpoint.
+
+  THE CORRECT FIGURE. One token of diff, then llama-perplexity on both arms,
+  same forty chunks, same session:
+
+      activation            i2_s                     t5b
+      LLM_FFN_SILU      96.8243 +/- 3.55673      96.8243 +/- 3.55673
+      LLM_FFN_RELU_SQR  16.7482 +/- 0.50521      16.7482 +/- 0.50521
+
+  Against Qwen2.5-3B-Instruct's 8.2837 on the same corpus, same 40 chunks,
+  same binary, that is a factor of 2.02 -- not 11.7. Established by
+  results/activation_mismatch.txt; raw run in
+  results/activation_run_2026-09-13.log.
+
+  WHAT IS UNAFFECTED, and it is what this file is actually cited for. The two
+  FORMATS agree to six significant figures under BOTH activations: i2_s and
+  t5b print the same figure in the SILU row and the same figure in the
+  squared-ReLU row. Both arms have always run the same graph, so a wrong
+  activation cancels exactly in the comparison. Sections 1 and 2 stand as
+  written, and so does section 3's own sentence that the absolute number "is
+  NOT evidence about t5b, in either direction". The identity is the result of
+  this file; the absolute calibration was a second question and its answer has
+  moved.
+
+  THE REPRODUCE LINE BELOW STILL PRINTS 96.8243. The graph was restored after
+  the experiment and the tree rebuilt, so the working copy is back on
+  LLM_FFN_SILU -- verified by grep, not assumed. Reproducing 16.7482 takes the
+  one-token edit described in results/activation_mismatch.txt.
+
+  Not a discovery: microsoft/BitNet#588 reports the same mismatch, and two
+  upstream pull requests for it were closed unmerged. What is unpublished is
+  this checkpoint's perplexity under this harness.
+
+==============================================================================
+
 PERPLEXITY: THE STRONGEST IDENTITY CHECK AVAILABLE, AND AN ABSOLUTE NUMBER
 ==============================================================================
 
@@ -54,6 +103,11 @@ PERPLEXITY: THE STRONGEST IDENTITY CHECK AVAILABLE, AND AN ABSOLUTE NUMBER
 
 3. THE ABSOLUTE NUMBER, WHICH IS NOT FLATTERING AND IS NOT MEANT TO BE
 ------------------------------------------------------------------------------
+  ** SUPERSEDED, see the correction at the head of this file. 96.8243 is the
+  ** mis-built graph's figure; under the checkpoint's own squared ReLU the same
+  ** forty chunks give 16.7482 +/- 0.50521. The last paragraph of this section
+  ** -- that the number is not evidence about t5b in either direction -- holds
+  ** and is the reason the rest of this file is unaffected.
 
   96.82 is high. Three reasons, none of them about the weight format:
 
@@ -71,6 +125,11 @@ PERPLEXITY: THE STRONGEST IDENTITY CHECK AVAILABLE, AND AN ABSOLUTE NUMBER
 
 4. AGAINST ANOTHER MODEL, WHICH IS WHAT "WHAT LEVEL IS IT" ACTUALLY ASKS
 ------------------------------------------------------------------------------
+  ** SUPERSEDED, see the correction at the head of this file. The BitNet row
+  ** and every figure derived from it are the mis-built graph's. The corrected
+  ** comparison is 16.7482 against Qwen2.5-3B-Instruct's 8.2837, a factor of
+  ** 2.02. The Qwen row, the cross-tokeniser caveat and the shared no-chat-
+  ** template handicap below are unchanged and still apply.
 
   Same corpus, same 40 chunks, same context and batch, same binary:
 
@@ -79,7 +138,7 @@ PERPLEXITY: THE STRONGEST IDENTITY CHECK AVAILABLE, AND AN ABSOLUTE NUMBER
       Qwen2.5-3B-Instruct  (3 B, quantised)   1.80 GiB    8.2837 +/- 0.21844
 
   A factor of 11.7. That is the honest calibration this project did not have,
-  and it is not close.
+  and it is not close.                      [SUPERSEDED -- the factor is 2.02]
 
   THE COMPARISON IS INDICATIVE, NOT RIGOROUS, for one reason that matters:
   perplexity is per TOKEN, and these two use different tokenisers -- BitNet the
@@ -94,5 +153,7 @@ PERPLEXITY: THE STRONGEST IDENTITY CHECK AVAILABLE, AND AN ABSOLUTE NUMBER
   question -- where this model stands -- which the format work does not address
   and which paper 6.1 listed as absent. It is absent no longer, and the answer
   is that a 2.41 B ternary model is a long way behind a 3 B quantised one on
-  this measure.
+  this measure.   [SUPERSEDED -- at 16.7482 against 8.2837 the gap is 2.02x,
+                   which is a different sentence; the question the section
+                   asks is still open and is not settled by this file.]
 

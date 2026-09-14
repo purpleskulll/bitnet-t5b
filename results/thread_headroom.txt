@@ -1,13 +1,19 @@
 HOW MUCH ARITHMETIC IS FREE AT THE REAL MODEL'S WORKING SET
 ==============================================================================
 
-  Reproduce:
-      make -C src_modifications build/obj/ggml_i2s_ternary.o
-      gcc -O3 -mavx2 -mfma -march=native -std=c11 -pthread \
-          src_modifications/bench/bench_threads.c \
-          src_modifications/build/obj/ggml_i2s_ternary.o \
-          -o src_modifications/build/bench_threads
-      ./src_modifications/build/bench_threads 0.5
+  Reproduce, from a clone of this repository:
+      make i2s-ref              # this benchmark measures upstream's own i2_s
+                                # kernel, which is MIT-licensed upstream code
+                                # and is fetched, not redistributed here
+      make bench
+      ./build/bench_threads 0.5
+
+  Without `make i2s-ref` there is no kernel to measure and `make bench` SKIPS
+  bench_threads with a message rather than silently exiting 0.
+
+  (Private tree: the same source is under src_modifications/, built by
+  `make -C src_modifications` into src_modifications/build/bench_threads.
+  Same code, same flags -- that is the binary the figures below came from.)
 
   Host: AMD Ryzen 5 3600, 6 physical cores / 12 threads, L2 512 KiB per core,
   L3 32 MiB in two 16 MiB CCX slices. Kernel measured: upstream llama.cpp's

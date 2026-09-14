@@ -8,15 +8,17 @@ abstract: |
   1.600 bits per weight is `llama.cpp`'s `TQ1_0`, is published
   with a correctness theorem as Spectra 1.1's `TQ1` [spectra], appears a
   year earlier in statistical genomics [miraculix] and fifteen years earlier
-  in heuristic search [breyerkorf]; recovering all five digits
+  in heuristic search [breyerkorf]; the $32k+j$ interleave that lets a digit
+  plane address 32 consecutive activations is `i2_s`'s and `TQ1_0`'s
+  alike; recovering all five digits
   *independently* from the packed byte, table-free, is NTRU's since
   2019 [ntru] and is what `TQ1_0`'s own NEON path does; contracting on
   the digit planes without materialising a weight is `TQ1_0`'s on both
   instruction sets; carrying the scale per tensor rather than per block was
   `block_q1_3`, on the pull request that became `TQ1_0`; and the
   condition under which a denser format pays is Equation 1 of Zukowski et
-  al. [zukowski], twenty years old. §1.1 states each
-  concession and what remains beside it.
+  al. [zukowski], twenty years old. §1.1 states all six
+  concessions and §1.2 what remains beside them.
   What this paper offers instead is measurement. We build **t5b** --- the
   same construction at a block length of $160=32\times5$, which takes no remainder
   byte, with the scale in `i2_s`'s existing 32-byte tail so that no graph
@@ -38,12 +40,20 @@ abstract: |
   agrees with the two-bit baseline to six significant figures. We further report
   that 4.76% of the model's feed-forward neurons are identically
   zero, that the dead index sets of the gate and up projections coincide in all
-  thirty layers, and that an independent fine-tune revives none of them. All
+  thirty layers, and that an independent fine-tune revives none of them. Separately,
+  and as a property of the loader rather than of either format, `llama.cpp`
+  builds this architecture's feed-forward block with `SiLU` where the
+  checkpoint declares squared ReLU: supplying the declared activation moves
+  perplexity over the same tokens from 96.8243 to 16.7482, a factor of
+  5.78, and the bit-identity above holds under both. All
   results are from a single AVX2 microarchitecture *without* VNNI. Two
   independent runs bound that limitation: a static pipeline model, calibrated
-  against the host to 3.0%, finds the arithmetic ratio stable across
-  Zen 3/4/5, Ice Lake and Sapphire Rapids, and a reviewer's Intel Xeon reproduces
-  it at 2.11 against our 2.43. On real VNNI hardware the same reviewer
+  against the host to 3.0%, puts the arithmetic ratio at or below
+  its Zen 2 value on every newer target it covers --- four distinct scheduler
+  models rather than six, since `znver3`, `znver4` and `znver5`
+  return identical counts, so what is supported is one-sided, that the ratio does
+  not run away, and not that it is constant --- and a reviewer's Intel Xeon
+  reproduces it at 2.11 against our 2.43. On real VNNI hardware the same reviewer
   measures the ratio rising by 8.8% --- the direction predicted, from
   the predicted mechanism, at a magnitude smaller than the eight-bit storage choice
   of a system built for those targets would suggest, though on a shared host whose
@@ -107,8 +117,10 @@ bits per weight only because each 256-element block carries an f16 scale and a
 16-element remainder at two bits; the code bytes themselves are at 1.600.
 Any claim of novelty for the packing would survive on the arithmetic of that
 block overhead alone, which is not a claim worth making. We had integrated into
-this very codebase without checking it, and record that here rather than in a
-footnote.
+this very codebase without checking it --- and the same holds for the extraction
+arithmetic and for the scale convention conceded in §1.1. All
+three were found after the fact. This paper records that here, once, rather than
+in a footnote.
 
 What this paper contributes is therefore narrower than any of that, and
 §1.1 concedes each piece to its owner. What is left: a block
@@ -128,147 +140,165 @@ ternary, together with a decode-fused kernel. No weight value changes; the
 output is bit-identical. It is therefore neither pruning nor weight sharing nor
 a new quantisation scheme, and it composes with all three.
 
-## 1.1 Contributions
+## 1.1 Prior art, and what is not claimed here
 
-1. A 1.600-bit variant of the *known* base-3 packing
-         (§3). Five ternary values as the base-3 digits of a byte
-         is not ours: it is `TQ1_0`'s construction in `llama.cpp`, and
-         it is published with a correctness theorem by Vaidhya et
-         al. [spectra] as Spectra 1.1's `TQ1`, whose $p=8$, $k=5$
-         recommendation and 1.6-bit figure are the same as ours. Nor does it
-         originate in this field: Breyer and Korf store heuristic estimates modulo
-         three at 1.6 bits per entry for pattern databases in heuristic
-         search [breyerkorf], fifteen years before ternary language models,
-         and the `5codes` format of *miraculix* publishes the same
-         construction in statistical genomics a year before
-         `TQ1_0` [miraculix] --- its Algorithm 1 writes out the
-         positional weights $3^{0},\dots,3^{4}$, its source defines
-         `BitsPerCode 1.6`, and its stated motivation is the one taken here,
-         to keep the multiplication on the compressed data so that nothing is
-         decompressed. Both decode by table: miraculix precomputes the $3^{5}$
-         possible partial dot products per tile and uses the packed byte directly
-         as the index, so it belongs with the table-lookup systems above rather
-         than with the decode of §4.
+Six constructions this work is built from belong to someone else. They are
+conceded here, once and in one place: the base-3 packing, the $32k+j$
+interleave, the depth-one extraction arithmetic, the fused digit-plane
+contraction, the per-tensor scale model and the profitability condition.
 
-         **Nor is the scale model ours, and it is in the very pull request
-         cited above.** `block_q1_3` lived on \#8151 from 2024-06-19 to
-         2024-07-30: five elements per byte, annotated in the same words
-         (*``5 elements per byte ($3^5 = 243 < 256$)''*) and carrying
-         *no* scale field at all, at 1.625 bits per weight. Its scale
-         was a separate per-layer `ggml` tensor of extent one applied after
-         the matmul --- `Qcur = ggml_mul(ctx0, Qcur,
-         model.layers[il].wq_scale)` in `build_bitnet`. It was replaced by
-         `TQ1_0`'s per-block f16 deliberately, so that the stock computation
-         graph could be reused, and the cost of that choice was recorded at the
-         time as wasting 0.0625 bits per weight. The same construction ships
-         today as `IQ1_BN` in `ik_llama.cpp`.
+**The packing.**  Five ternary values as the base-3 digits of a byte
+is not ours: it is `TQ1_0`'s construction in `llama.cpp`, and
+it is published with a correctness theorem by Vaidhya et
+al. [spectra] as Spectra 1.1's `TQ1`, whose $p=8$, $k=5$
+recommendation and 1.6-bit figure are the same as ours. Nor does it
+originate in this field: Breyer and Korf store heuristic estimates modulo
+three at 1.6 bits per entry for pattern databases in heuristic
+search [breyerkorf], fifteen years before ternary language models,
+and the `5codes` format of *miraculix* publishes the same
+construction in statistical genomics a year before
+`TQ1_0` [miraculix] --- its Algorithm 1 writes out the
+positional weights $3^{0},\dots,3^{4}$, its source defines
+`BitsPerCode 1.6`, and its stated motivation is the one taken here,
+to keep the multiplication on the compressed data so that nothing is
+decompressed. Both decode by table: miraculix precomputes the $3^{5}$
+possible partial dot products per tile and uses the packed byte directly
+as the index, so it belongs with the table-lookup systems above rather
+than with the decode of §4.
 
-         What is left is narrower again, and worth stating with its true size.
-         Of the 20,828,160 bytes t5b saves against `TQ1_0`,
-         `Q1_3` already delivered 78.2%; the residual is
-         4,546,560 bytes, 1.03% of the `TQ1_0` ternary
-         payload and 0.38% of the file. It is a block-length choice
-         rather than a scale model: $64 = 12\times5+4$ needs a remainder byte and
-         lands at 1.6250, whereas $160 = 32\times5$ needs none and lands at
-         1.6000. The one thing here that is not anticipated is that the
-         scale rides in `i2_s`'s own 32-byte tail, so no graph node and no
-         loader change is required where `Q1_3` needed both --- and that is
-         `i2_s`'s convention, not ours. As with the packing and the decode,
-         we found this after the fact.
-2. A decode of depth one rather than depth five (§4). That a
-         multiplication-based decode avoids division and modulo is also known:
-         Spectra 1.1 exploits $3^{5}\approx 2^{8}$ to extract the trits
-         *iteratively*, $b_{i+1}=(3b_{i})\wedge\texttt{0xFF}$ for
-         $i=0\dots4$, a strictly serial chain of five dependent multiplies. The
-         decode used here instead takes all four quotients
-         $\lfloor x/3^{j}\rfloor$ **independently, straight from the original
-         byte**, at one `vpmulhuw` each, which is exact because a five-trit
-         byte satisfies $x\le242$ and so lies inside the exactness range of
-         16-bit magic multipliers --- collapsing the depth-five dependence to depth
-         one.
+**The interleave.**  The $32k+j$ layout that makes digit plane $k$
+address 32 consecutive activations is `i2_s`'s at two bits and
+`TQ1_0`'s at five digits per byte, on the same instruction set.
+§3 states it against both, because it is what the drop-in claim
+rests on.
 
-         **That arithmetic is not ours either, and at exactly these
-         parameters.** The NTRU reference implementation has recovered all five
-         trits of a packed byte since 2019 with four independent multiplies read
-         directly from that byte --- constants 171, 57, 19,
-         203 with shifts 9, 9, 9, 14, which we
-         verified to be exact floor divisions by $3,9,27,81$ over all 256 byte
-         values --- at dependency depth one and without a lookup
-         table [ntru].\footnote{`ref-common/pack3.c`, function
-         `poly_S3_frombytes`. It does contain a serial divide-by-three
-         chain, but only in a leftover tail of at most three coefficients, which is
-         not compiled at all for the `hps4096821` and `hrss701` parameter
-         sets.} We found this only after the fact, and record it here rather than
-         in a footnote, as with the packing above.
+**The scale model.**  `block_q1_3` lived on \#8151 from 2024-06-19 to
+2024-07-30: five elements per byte, annotated in the same words
+(*``5 elements per byte ($3^5 = 243 < 256$)''*) and carrying
+*no* scale field at all, at 1.625 bits per weight. Its scale
+was a separate per-layer `ggml` tensor of extent one applied after
+the matmul --- `Qcur = ggml_mul(ctx0, Qcur,
+model.layers[il].wq_scale)` in `build_bitnet`. It was replaced by
+`TQ1_0`'s per-block f16 deliberately, so that the stock computation
+graph could be reused, and the cost of that choice was recorded at the
+time as wasting 0.0625 bits per weight. The same construction ships
+today as `IQ1_BN` in `ik_llama.cpp`.
 
-         NTRU nevertheless materialises every coefficient into a coefficient array
-         and defers the modulo-three reduction to a separate branch-free sweep,
-         where the kernel here feeds the digit planes straight into the
-         contraction. **That distinction does not rescue a novelty claim
-         either, and the counter-example is the kernel this paper positions itself
-         against.** `TQ1_0`'s NEON path derives all four scalings
-         $3,9,27,81$ of the loaded byte with one `vmulq_u8` each, every one
-         of them from the *original* vector rather than from its predecessor,
-         extracts the digits table-free by multiplying by three and keeping the two
-         bits above eight, and passes them directly to `vdotq_s32`. That is
-         depth one, table-free, and without materialisation, and it has shipped
-         since pull request \#8151. Its AVX2 path does the same without
-         materialisation but at depth *two*: lacking an 8-bit multiply it
-         chains the scalings as shift-and-add, deriving $27$ from $3$ and $81$ from
-         $9$ --- except in its four-element tail, which reaches depth one through
-         `_mm256_mullo_epi16` against a vector of $1,3,9,27$.
+What is left of the format is narrower again, and worth stating with its true
+size. Of the 20,828,160 bytes t5b saves against `TQ1_0`,
+`Q1_3` already delivered 78.2%; the residual is
+4,546,560 bytes, 1.03% of the `TQ1_0` ternary
+payload and 0.38% of the file. It is a block-length choice
+rather than a scale model: $64 = 12\times5+4$ needs a remainder byte and
+lands at 1.6250, whereas $160 = 32\times5$ needs none and lands at
+1.6000. The one thing here that is not anticipated is that the
+scale rides in `i2_s`'s own 32-byte tail, so no graph node and no
+loader change is required where `Q1_3` needed both --- and that is
+`i2_s`'s convention, not ours.
 
-         What is therefore left is one instantiation, not a mechanism: the depth-one
-         form in the AVX2 *main* path, reached through the high half of a
-         16-bit multiply. Upstream states that as an open question in the file
-         itself --- `// TODO: can _mm256_mulhi_epu16 be faster even if
-         16-bits?`, `arch/x86/quants.c:1406`. We verified every sentence of
-         this paragraph against the vendored kernel at `390c307` rather than
-         against a description of it.
+**The extraction arithmetic.**  That a
+multiplication-based decode avoids division and modulo is also known:
+Spectra 1.1 exploits $3^{5}\approx 2^{8}$ to extract the trits
+*iteratively*, $b_{i+1}=(3b_{i})\wedge\texttt{0xFF}$ for
+$i=0\dots4$, a strictly serial chain of five dependent multiplies. The
+decode used here instead takes all four quotients
+$\lfloor x/3^{j}\rfloor$ independently, straight from the original
+byte, at one `vpmulhuw` each, which is exact because a five-trit
+byte satisfies $x\le242$ and so lies inside the exactness range of
+16-bit magic multipliers --- collapsing the depth-five dependence to depth
+one. That form is not ours either, and at exactly these
+parameters. The NTRU reference implementation has recovered all five
+trits of a packed byte since 2019 with four independent multiplies read
+directly from that byte --- constants 171, 57, 19,
+203 with shifts 9, 9, 9, 14, which we
+verified to be exact floor divisions by $3,9,27,81$ over all 256 byte
+values --- at dependency depth one and without a lookup
+table [ntru].\footnote{`ref-common/pack3.c`, function
+`poly_S3_frombytes`. It does contain a serial divide-by-three
+chain, but only in a leftover tail of at most three coefficients, which is
+not compiled at all for the `hps4096821` and `hrss701` parameter
+sets.}
 
-         **We answered that question, and the answer is no --- for
-         `TQ1_0`.** Transplanting the depth-one form into upstream's own
-         kernel and measuring it there gives $0.983\times$ --- faster in only 7
-         of 54 interleaved rounds across six invocations --- at $131\to137$ vector
-         operations and $0\to4$ register spills. The reason does not transfer to
-         the format described here, and the difference is the encoding.
-         `TQ1_0` stores $\lceil 256v/243\rceil$, a fixed-point fraction, so
-         its digits come out by multiplying by $3^{j}$ in *byte* lanes and
-         taking the top bits --- no multiply-port instruction at all, and no reason
-         to leave byte lanes. t5b stores the integer $v\le242$, so its digits
-         are floor divisions, AVX2 has no 8-bit multiply, and the even/odd split
-         and fold that costs `TQ1_0` those six operations is not an
-         alternative here but the only route. The instantiation is therefore real
-         and is not worth what a reader might assume: it is the right choice for
-         this encoding and the wrong one for upstream's.
+**The fused contraction.**  NTRU materialises every coefficient into a
+coefficient array
+and defers the modulo-three reduction to a separate branch-free sweep,
+where the kernel here feeds the digit planes straight into the
+contraction. That distinction does not rescue a novelty claim
+either, and the counter-example is the kernel this paper positions itself
+against. `TQ1_0`'s NEON path derives all four scalings
+$3,9,27,81$ of the loaded byte with one `vmulq_u8` each, every one
+of them from the *original* vector rather than from its predecessor,
+extracts the digits table-free by multiplying by three and keeping the two
+bits above eight, and passes them directly to `vdotq_s32`. That is
+depth one, table-free, and without materialisation, and it has shipped
+since pull request \#8151. Its AVX2 path does the same without
+materialisation but at depth *two*: lacking an 8-bit multiply it
+chains the scalings as shift-and-add, deriving $27$ from $3$ and $81$ from
+$9$ --- except in its four-element tail, which reaches depth one through
+`_mm256_mullo_epi16` against a vector of $1,3,9,27$.
 
-         **And against the serial form *this* encoding admits, depth
-         one is free rather than expensive.** A chain
-         $q_{j+1}=`mulhi`(q_{j},21,846)$ over the two views is two
-         multiplies at each of four levels, the same eight the independent form
-         issues; what changes is only the dependence. Nor does the latency it buys
-         bind: §7 measures the loop at 67% of its
-         multiply-port ceiling. So the honest statement is that depth one costs
-         nothing and relieves a constraint that was not the binding one, which is a
-         weaker claim than an earlier draft made. No head-to-head measurement
-         against Spectra's kernel was made: their figures are from a Mac M4 and an
-         EPYC part, ours from one Zen 2 host.
-3. A *measurement* of the profitability condition
-         (§5), derived from (1) and verified by
-         measuring both $\pi$ and $B$ rather than inferring either. The criterion
-         itself is twenty years old: Equation 1 of Zukowski et
-         al. [zukowski] switches between the I/O-bound and CPU-bound regimes
-         on a test that is $S\le\Sigma$ rearranged, and applies it as an
-         adopt-or-reject rule for a codec. What is new is the level of the
+What is therefore left is one instantiation, not a mechanism: the depth-one
+form in the AVX2 *main* path, reached through the high half of a
+16-bit multiply. Upstream states that as an open question in the file
+itself --- `// TODO: can _mm256_mulhi_epu16 be faster even if
+16-bits?`, `arch/x86/quants.c:1406`. We verified every sentence of
+this paragraph against the vendored kernel at `390c307` rather than
+against a description of it. We answered that question by transplanting the
+form into upstream's kernel, and the answer is no --- for `TQ1_0`;
+§7.8 reports the measurement and why its reason does not transfer
+to this encoding.
+
+Against the serial form *this* encoding admits, depth
+one is free rather than expensive. A chain
+$q_{j+1}=`mulhi`(q_{j},21,846)$ over the two views is two
+multiplies at each of four levels, the same eight the independent form
+issues; what changes is only the dependence. Nor does the latency it buys
+bind: §7 measures the loop at 67% of its
+multiply-port ceiling. So the honest statement is that depth one costs
+nothing and relieves a constraint that was not the binding one, which is a
+weaker claim than an earlier draft made. No head-to-head measurement
+against Spectra's kernel was made: their figures are from a Mac M4 and an
+EPYC part, ours from one Zen 2 host.
+
+**The condition.**  The criterion is twenty years old: Equation 1 of
+Zukowski et al. [zukowski] switches between the I/O-bound and CPU-bound
+regimes on a test that is $S\le\Sigma$ rearranged, and applies it as an
+adopt-or-reject rule for a codec.
+
+## 1.2 Contributions
+
+Each item names the construction it builds on; §1.1 concedes
+that construction to its owner.
+
+1. A 1.600-bit variant of the known base-3 packing
+         (§3), on `TQ1_0`'s construction and
+         `block_q1_3`'s scale model: block length $160=32\times5$, which
+         takes no remainder byte, with the scale in `i2_s`'s own 32-byte
+         tail so that no graph node and no loader change is needed.
+2. The AVX2 instantiation of a depth-one decode (§4), on
+         NTRU's extraction arithmetic and `TQ1_0`'s digit-plane
+         contraction: the form upstream has on NEON and names as an open question
+         in its own AVX2 source, reached here through the high half of a 16-bit
+         multiply, with an exactness proposition and an exhaustive
+         first-failure table behind it. §7.8 answers upstream's
+         question by transplanting the form into its kernel, where it does not pay.
+3. A column-blocked matrix--matrix kernel (§4), which the
+         nearest prior format has no equivalent of and which is what carries the
+         prompt-processing result.
+4. A *measurement* of the profitability condition
+         (§5), on Zukowski et al.'s criterion, derived
+         from (1) and verified by
+         measuring both $\pi$ and $B$ rather than inferring either. What is new is
+         the level of the
          hierarchy at which it is measured --- there $B$ is disk bandwidth against
          a RAID array and main memory is named only as future work, here it is
          DRAM-to-SIMD --- and the fact that both of its terms are measured on the
          part in question rather than assumed.
-4. Integration and end-to-end evaluation (§7) in
+5. Integration and end-to-end evaluation (§7) in
          `llama.cpp`, with the two-bit path retained as a control and
          losslessness verified by perplexity agreement over
          $2.05\times10^{4}$ tokens.
-5. A structural observation (§8): 4.76% of the
+6. A structural observation (§8): 4.76% of the
          checkpoint's feed-forward neurons are identically zero, the dead index
          sets of $W_{\text{gate}}$ and $W_{\text{up}}$ coincide in all thirty
          layers, and an independent fine-tune revives none of them.
@@ -319,16 +349,6 @@ not the coder's rate but its cost: a variable-rate decoder must still satisfy
 reconstructs tiles into shared memory for tensor cores rather than contracting
 without materialising. Whether an interleaved rANS decoder can meet that bound
 on a SIMD CPU is open, and this paper does not answer it.
-
-**Whose kernel the baseline is.**  `i2_s` is not an upstream
-`ggml` type. `ggml-org/llama.cpp` carries `TQ1_0` and
-`TQ2_0` as type numbers 34 and 35 and nothing at 36; `GGML_TYPE_I2_S
-= 36` is declared in the `llama.cpp` fork that `microsoft/BitNet`
-pins as `3rdparty/llama.cpp`, at the commit this work builds against. Every
-comparison in this paper is therefore against that fork's kernel, not against
-`ggml`'s, and the two ternary kernels `ggml` does carry are examined
-separately in §7.8. The distinction matters for where a reader
-looks and for where a defect would be reported.
 
 ## 2.2 The interface a replacement must preserve
 
@@ -546,8 +566,8 @@ own comments use. The difference is under 1% and neither changes
 a conclusion, but the two are not the same convention.)
 §7.1 shows that removing the cancellation makes it
 disagree with exact arithmetic in 11,998 of 12,000 rows at
-$K=6912$ --- statistical rather than absolute, because with
-0.78% of headroom the outcome turns on each row's own code mean.
+$K=6912$ --- statistical rather than absolute, for the margin computed
+there.
 
 ## 4.3 Why bytes and not words
 
@@ -618,8 +638,11 @@ the rate, and neither kernel reaches it: §7 measures the
 baseline at 63% of its 130.9\,GMAC/s ceiling and the packed
 kernel at 67% of its 50.5. Substituting ceilings would give
 $S=\mu_{B}/\mu_{A}=2.60$ against the 2.43 measured, and would raise
-every $\Sigma$ below by a factor $1/0.63$ --- to 2.12 at one thread
-and 3.39 at four --- which reverses the prediction at two and at four
+each $\Sigma$ below by that arm's own shortfall rather than by one common
+factor, because the shortfall is not constant in thread count: the baseline
+attains 83.70\,GMAC/s per core at one thread and 71.89 at four
+against the same 130.9 ceiling, so those two cells would move to
+2.12 and 3.39 respectively. That reverses the prediction at two and at four
 threads, where a loss is what §7.3 measures. Both terms are
 therefore taken from measured kernel rates throughout, and $\pi/\mu$ appears
 only as the ceiling each kernel fails to reach. The condition is a property of a
@@ -703,14 +726,43 @@ one*. At 3.03 the denser format wins at six threads; at any of the five
 contended values it does not. The sign of the
 one positive prediction therefore depends on the host being idle, which is a
 weaker statement than the table alone suggests
-(`results/sigma_six_threads.txt`). For t5b, $S=2.43$ measured against $F=1.25$;
-by (17) the code should lose at one, two and four threads and
-win at six, which is what §7.3 observes, at $0.53\times$,
-$0.62\times$, $0.78\times$ and $1.35\times$ respectively.
+(`results/sigma_six_threads.txt`).
+
+**What (17) therefore predicts, and on which host.**
+For t5b, $S=2.43$ measured against $F=1.25$. On the idle host of
+the table above, (17) says the code loses at one, two and four
+threads and wins at six. At the five contended $\Sigma_{6}$ values just
+reported it says the code loses everywhere, six threads included. What is
+observed is the idle-host pattern: §7.3 measures
+$0.53\times$, $0.62\times$, $0.78\times$ and
+$1.35\times$. Both signs therefore hold as measured; what the contended
+runs withdraw is the claim that the six-thread sign is a property of the part
+rather than of its occupancy.
+
+**These are the replay's predictions, and the four-thread one is
+superseded.**  Both terms of $S=2.43$ are measured against the
+`i2_s` *reference* kernel (§7.2), which is the
+kernel the replay of §7.3 drives. It is not the kernel
+`llama.cpp` dispatches: §7.4 measures that path at about
+$1.6\times$ the reference's time, so the ratio the condition takes in situ is
+$S_{\mathrm{eff}}=2.43/1.606=1.51$, below
+$\Sigma_{4}=1.86$. The four-thread cell is therefore a loss in the replay
+and a win in the deployed model, and each is right about its own kernel pair.
+Every prediction in this section is the replay's unless it says otherwise.
 
 ---
 
 # 6. Experimental setup
+
+**Whose kernel the baseline is.**  `i2_s` is not an upstream
+`ggml` type. `ggml-org/llama.cpp` carries `TQ1_0` and
+`TQ2_0` as type numbers 34 and 35 and nothing at 36; `GGML_TYPE_I2_S
+= 36` is declared in the `llama.cpp` fork that `microsoft/BitNet`
+pins as `3rdparty/llama.cpp`, at the commit this work builds against. Every
+comparison in this paper is therefore against that fork's kernel, not against
+`ggml`'s, and the two ternary kernels `ggml` does carry are examined
+separately in §7.8. The distinction matters for where a reader
+looks and for where a defect would be reported.
 
 | CPU | AMD Ryzen 5 3600 (Zen 2), 6 cores / 12 threads |
 |---|---|
@@ -757,6 +809,13 @@ $$
 \mathrm{PPL}_{\texttt{t5b}}=96.8243\pm3.55673.
 $$
 
+The *absolute* figure is not this checkpoint's, and nothing here claims it
+is: `llama.cpp` builds this architecture's feed-forward block with
+`SiLU` where the checkpoint declares squared ReLU, and under the declared
+activation the same forty chunks give 16.7482 in both arms
+(§9). The claim this paragraph makes is the *identity*,
+and the identity holds under both activations, because the two arms have always
+run whichever graph the loader built.
 Not only the final estimates but all forty running estimates agree exactly, from
 $[1]\,47.2744$ to $[40]\,96.8243$; instrumentation confirms the arms
 differed (51,660 calls through the new path against zero). This compares a
@@ -766,15 +825,18 @@ decoded string.
 **How much that assertion count is worth.**  An assertion count measures
 effort, not power, so the suite's power is measured directly by mutation:
 twenty-one defects are injected one at a time into the kernel and its header ---
-each magic multiplier perturbed, the digit multiplication changed from $3y$ to
-$5y$, the odd-byte view shifted by seven instead of eight, the low-byte mask
-narrowed, two digit planes given each other's activations, the radix changed,
+each of the four magic multipliers perturbed, the digit multiplication changed
+from $3y$ to $5y$, the odd-byte view shifted by seven instead of eight, the
+low-byte mask narrowed, the byte-wise digit subtraction made word-wise, two
+digit planes given each other's activations, the packer's digit weights
+perturbed, the radix changed,
 the digit count reduced, the accumulator fold raised from 12 to 13 and to
-the reference kernel's 32, and six aimed at the column-blocked GEMM path specifically, which
+the reference kernel's 32, and seven aimed at the column-blocked GEMM path specifically, which
 shares no code with the per-row one and carries the `pp512` result.
 **Eighteen are killed.**
 
-One of the six is worth its own sentence. The proposition of
+Two of the seven are worth their own sentences, and they are the pair that
+bounds the exactness argument. The proposition of
 §4 gives a *sufficient* exactness range for a magic
 multiplier, and it is conservative: replacing 811 by 812 is guaranteed only
 below $x = 198$ but in fact first fails at 323, above every packed byte, so it
@@ -786,10 +848,10 @@ The remaining three survive, and checking rather than filing them is what makes
 the result meaningful: all three are *exactly equivalent* on every
 reachable input, proved exhaustively rather than argued. Replacing the magic multiplier
 811 by 810 leaves $\lfloor x/81 \rfloor$ unchanged on all 256 byte values;
-replacing it by 812 leaves it unchanged for the same reason; and replacing the
+the 812 mutant just discussed is unchanged for the same reason; and replacing the
 byte-wise digit subtraction by a word-wise one changes nothing on any of the
 65,536 word lanes, because no low byte ever borrows --- the invariant
-§4.3 asserts, confirmed independently of the text that asserts it. The script carries both proofs and fails if either mutant is ever
+§4.2 asserts, confirmed independently of the text that asserts it. The script carries both proofs and fails if either mutant is ever
 *killed*, since that would mean the kernel had lost the property the proof
 rests on.
 
@@ -836,7 +898,13 @@ One core, weights resident in L2 so transport cannot bind:
 | t10 (word) | 30.04 | 50.25 | 19.25 | 8.25 | 160 | 34.6 | 87% |
 | **t5b (byte)** | **33.74** | 47 | 13 | 0 | 160 | 50.5 | 67% |
 
-The ceiling is $\pi\cdot(\text{weights}/\text{mul})$. t5b initially measured
+The ceiling is $\pi\cdot(\text{weights}/\text{mul})$. The *instr* column
+counts every instruction in the steady-state loop body, the loop branch
+included. Where §9 and §7.7 speak of *vector*
+operations they mean the vector subset of that column, which is smaller: 17 of
+the baseline's 21, and 43 of t5b's 47 as built with `-march=native`
+(`results/microarch_model.txt`,
+`results/shufdig_measurement.txt`). t5b initially measured
 24.36 GMAC/s --- slower than t10 despite fewer multiplies --- which no
 end-to-end benchmark could diagnose; disassembly showed 44 stack references in a
 425-instruction function. One block per iteration with each plane contracted at
@@ -957,22 +1025,15 @@ dispatch site in the same expression, so
 the ratio becomes a quotient of two measured quantities and whatever the
 dispatch costs is common to both and divides out.
 
-The probe's cost is measured rather than assumed. An `rdtsc` pair alone
-costs 19 ns
-and is flat in thread count. The same pair with an atomic add to *one
-shared counter* --- what the original instrumentation used --- costs
-18.7 ns at one thread and 87.6 ns at six, a
-factor of 4.7, because every `ggml` worker issues a
-read-modify-write to the same cache line and they serialise on the coherence
-protocol. Padding the counter per thread returns it to
-19 ns, flat. Against the 94.8 µs a single
-matmul call takes, even the worst case is 0.09% per probe and
-0.18% for the entry/exit pair, so no version endangers the
-measurement --- but the shared counter's cost *grew along the thread axis
-this section compares on*, and a systematic error tracking the independent
-variable is worth removing at any size.
+The probe's cost was measured rather than assumed, and bounds at
+0.18% of a matmul call for the entry/exit pair, so no version of
+it endangers the measurement. One fact in that null result still carries weight:
+the original shared counter cost 4.7 times as much at six threads as at
+one, because every `ggml` worker serialised on the same cache line, so its
+error grew along the very axis this section compares on and it was replaced by a
+per-thread counter.
 
-**And it has now been run** (`results/insitu_symmetric.txt`). The measurement needed a patched
+And it has now been run (`results/insitu_symmetric.txt`). The measurement needed a patched
 `llama.cpp`, which had meant a container this host does not grant; building
 it natively instead --- `cmake` and `gcc`, no daemon, no privileges
 --- removed that obstacle. `insitu_measure.sh` interleaves the two
@@ -997,6 +1058,14 @@ rounds. What the objection bought is not a corrected number but a number that no
 longer rests on the assumption that everything outside the matmuls costs the
 same in both arms.
 
+The four-thread resolution survives with them. That resolution was
+built on the 1.606, so it has to be recomputed on the figure that replaced
+it. Against the replay's 13.19 ms the measured
+21.67 ms is a factor $1.643$, giving
+$S_{\mathrm{eff}} = 2.43/1.643 = 1.48$ against
+$\Sigma_{4}=1.86$. The inequality $S<\Sigma$ holds at four threads on the
+measured factor as it did on the derived one, and by a wider margin.
+
 **Where that time goes.**  Two further probes inside
 `tinyBLAS_I2S_AVX`, one around the contraction loop and one around the
 per-column post-processing, separate what the dispatch-site probe cannot.
@@ -1009,26 +1078,25 @@ call would be the call. Five runs:
 | post-processing | 3.1% |
 | dispatch (by difference) | 2.5% |
 
-**All three candidates are now answered.** Dispatch and post-processing
+All three candidates are now answered. Dispatch and post-processing
 together are 5.6%, so neither carries the difference: the
 1.257 is a statement about the inner loop's own arithmetic and memory
-traffic. The third, the accumulator fold, is answered by reading the kernel
-rather than by a third probe --- `tinyBLAS_I2S_AVX` has *no*
-32-block fold. It folds `int16` into `int32` once per 128-weight
-block, inside its block loop. So the fold is not a periodic cost that
-occasionally interrupts the contraction; it is part of every block, and it is
-inside the 94.4%.
+traffic. The third, the accumulator fold, needs no probe at all: as
+§7.1 establishes from the source, `tinyBLAS_I2S_AVX` folds
+once per 128-weight block and has no 32-block group. The fold is therefore not a
+periodic cost that occasionally interrupts the contraction; it is part of every
+block, and it is inside the 94.4%.
 
-That also settles which of the two `i2_s` implementations the overflow of
-§7.1 belongs to, and sharpens why it happens. The kernel feeds
+That also sharpens why the overflow of
+§7.1 happens where it does. The kernel feeds
 `vpmaddubsw` with raw 2-bit codes against `int8` activations, so an
 `int16` lane takes at most $2 \cdot 3 \cdot 127 = 762$ per instruction and
 $4 \cdot 762 = 3048$ per block: **ten blocks may be accumulated, not
 thirty-two**. The reference kernel's 32 is three times its own bound, which is
 the overflow; the dispatched kernel's 1 is a tenth of it.
 
-**The nine omitted folds cost 7.5% of the dispatched path's
-matmul time.** A tree identical but for accumulating ten blocks before folding
+The nine omitted folds cost 7.5% of the dispatched path's
+matmul time. A tree identical but for accumulating ten blocks before folding
 measures $9.49 \times 10^{9}$ cycles against $10.25 \times 10^{9}$, three runs
 each, with *identical* perplexity --- 108.6810 on four chunks of
 WikiText-2 in both. That is one measured component of the 25% by
@@ -1074,8 +1142,11 @@ blocks run twice --- and no quality claim is made from it.
 
 ## 7.5 Two ratios a reader will ask about immediately
 
-**Why 19.6% fewer weight bytes give 14%
-more throughput.**  Both halves of that question come from one run. The
+**Why 19.6% fewer weight bytes give 13.3%
+more throughput.**  The 13.3% is the median generation ratio of
+§7.4 over five invocations, which is the figure quoted
+throughout. Both halves of the question below come from one of those runs, whose
+own end-to-end ratio is 1.117. The
 `rdtsc` counter of §7.4 times the matmuls of a
 `llama-bench` `tg128` invocation at four threads, and the same
 invocation's wall clock gives the throughput, so the decomposition and the ratio
@@ -1117,11 +1188,10 @@ two measurements of the same quantity that share no apparatus, differing by
 
 The standalone replay of §7.3 puts the baseline's matmuls at
 13.19 ms against the 21.18 ms measured in
-situ. That gap is the replay's, not the model's: it drives
-`bitnet_\allowbreak vec_\allowbreak dot_\allowbreak i2_\allowbreak i8_\allowbreak s_\allowbreak reference`, which §7.4
-measures at $1.6\times$ the speed of the path `llama.cpp` actually
-dispatches. The replay is a lower bound on what the matmuls cost and was read as
-an estimate of it. Read as bandwidth, the weight stream moves
+situ, for the reason §7.4 gives: it drives
+`bitnet_\allowbreak vec_\allowbreak dot_\allowbreak i2_\allowbreak i8_\allowbreak s_\allowbreak reference`
+and not the path `llama.cpp` dispatches, so it is a lower bound on what the
+matmuls cost. Read as bandwidth, the weight stream moves
 521.0 MB in the 21.18 ms the baseline spends in
 the matmuls --- 24.6 GB/s, against 25.1  for t5b
 over its 418.8 MB and 16.70 ms. Equal rates in
@@ -1163,15 +1233,19 @@ representation is untouched --- same five digits, same 1.60755
 bits/weight, same bytes --- so the variant is a build option
 (`-DTERNARY_T5B_SHUFDIG`) and not a second format. It is *off* by
 default, and every figure elsewhere in this paper --- every $S$, every rate,
-every throughput --- is from the build without it. It is bit-identical:
-the full suite of 97,529 assertions passes against it, and the two decoders
+every throughput --- is from the build without it. It is bit-identical: the t5b
+kernel suite --- 97,529 assertions, the smallest of the three counts this
+paper quotes and the one the mutation harness of §7.1 uses as its
+control, not the 184,228 across five suites --- passes against it, and the
+two decoders
 agree on all 256 byte values including the thirteen foreign ones.
 
 Under the build's own flags the loop falls from 43 to 37 vector operations and
 from 13 to 11 multiply-port operations.\footnote{The count depends on
 `-march=native`, which the `Makefile` sets: without it the same source
 gives 42 and 36. The 0.2625 vector operations per weight quoted in
-§9 is the latter count.} Fifteen interleaved rounds, with the
+§9 is $42/160$, the count *without* that flag, which is
+also what `microarch_model.sh` compiles.} Fifteen interleaved rounds, with the
 untouched `i2_s` kernel measured in the same binaries as a control, give a
 median of $1.2254\times$ on the contraction, faster in 14 of 15 rounds
 --- the exception reading $0.6086$, an excursion eight times the control's
@@ -1188,7 +1262,12 @@ $p=0.00098$ by an exact two-sided sign test; the control's median is
 $1.0037\times$ with a round-to-round range of 5%, which is
 this measurement's noise floor. $S$ falls from 2.43 to 1.98.
 
-*No cell of the surplus table changes.* (17) failed at one
+*No cell of the surplus table changes.* The $S$ that moves here is the
+replay's: both its terms are measured against the `i2_s` *reference*
+kernel of §7.2, not against the path `llama.cpp`
+dispatches, so what follows is a statement about the same frame as
+§5's table and not about the in-situ ratio of
+§7.4. In that frame (17) failed at one
 to four threads and still fails; it held at six and still holds. What changes is
 the margin at the top of that range: the four-thread cell moves from
 31% short to 6.5% short. The improvement lands
@@ -1211,9 +1290,14 @@ $43/37=1.1622$ on total vector operations, $13/11=1.1818$ on the
 multiply port, against 1.2254 measured. The instruction mix shows the
 multiply port falling from 13 to 11 while the shift-and-shuffle pair stays at
 exactly 9 --- three shifts traded for three shuffles --- so the distribution
-across ports flattens. On the cycle count derived from this host's measured
-rate and clock the loop sustains 2.45 vector operations per cycle against
-the baseline's 2.32 --- both above the two per cycle that a part cracking
+across ports flattens. On the 18.54 cycles per block this host's measured
+rate and clock imply (§9.1) the loop sustains 2.45 vector
+operations per cycle against the baseline's 2.32. The kernel header and
+`results/shufdig_measurement.txt` take 19.7 cycles for the same
+block instead, so the latter prints 2.18 rising to 2.30: the two
+cycle counts differ by 6% and the ratios they give agree to
+0.1%.
+All four figures are above the two per cycle that a part cracking
 every 256-bit integer operation into two 128-bit micro-operations should
 sustain, which is itself a reason to treat these absolute figures as indicative
 and the ratio as the measurement. Both loops spill zero times, so register pressure
@@ -1247,12 +1331,10 @@ at $K = 6912$ and one 32-byte record per tensor.
 **On size the honest margin is small.**  4.7% of the
 ternary payload and 1.9% of the file. Four fifths of the saving
 this work reports against `i2_s` was already present in the vendored tree
-under an upstream type number. Of the remaining fifth, 78.2% was
+under an upstream type number, and four fifths of the remaining fifth was
 present in the same pull request as `Q1_3` before `TQ1_0` replaced
-it (§1.1). What is attributable here is 4,546,560 bytes ---
-1.03% of the `TQ1_0` ternary payload and
-0.38% of the file --- and it is the block length, $160=32\times5$
-taking no remainder byte where $64=12\times5+4$ does.
+it. §1.1 works that residual out in bytes: what is attributable
+here is a block-length choice and nothing else.
 
 **On speed the margin is large and mostly not about the packing.**
 Three rotated `llama-bench` invocations, all three files in each:
@@ -1272,17 +1354,33 @@ expected to erase that margin.** At `tg128`, where no format has a batched
 path to exploit, all three land within about 10% and the ordering
 does not survive this host's noise.
 
+**The depth-one form, transplanted into upstream's own kernel.**
+Upstream names the depth-one AVX2 decode as an open question in its own source
+(§1.1). Transplanting the form into `TQ1_0`'s kernel and
+measuring it there answers that question, and the answer is no: the transplant
+measures $0.983\times$ --- faster in only 7
+of 54 interleaved rounds across six invocations --- at $131\to137$ vector
+operations and $0\to4$ register spills. The reason does not transfer to
+the format described here, and the difference is the encoding.
+`TQ1_0` stores $\lceil 256v/243\rceil$, a fixed-point fraction, so
+its digits come out by multiplying by $3^{j}$ in *byte* lanes and
+taking the top bits --- no multiply-port instruction at all, and no reason
+to leave byte lanes. t5b stores the integer $v\le242$, so its digits
+are floor divisions, AVX2 has no 8-bit multiply, and the even/odd split
+and fold that costs `TQ1_0` those six operations is not an
+alternative here but the only route. The instantiation is therefore real
+and is not worth what a reader might assume: it is the right choice for
+this encoding and the wrong one for upstream's.
+
 **What survives.**  Against `TQ1_0` on this machine, t5b is worth
 4.7% of the ternary bytes, plus the fact of being wired into the
 batched path. The claim that a sub-two-bit ternary packing is itself novel does
-not survive and is withdrawn in §1.1, along with the scale
-model, the interleave, the extraction arithmetic and the condition itself. What
-survives is narrower and is listed there: the block length that removes the
-remainder byte, the scale riding in `i2_s`'s existing 32-byte tail so
-that no graph node and no loader change is needed, the AVX2 instantiation of the
-depth-one decode, the column-blocked matrix--matrix kernel --- which
-`TQ1_0` has no equivalent of --- and the *measurement* of the
-condition rather than the condition.
+not survive. It is withdrawn in §1.1 along with the scale
+model, the depth-one extraction arithmetic, the fused digit-plane contraction
+and the condition itself, and with the interleave, which §3
+concedes against both upstream formats: six constructions, the same six the
+abstract names. What survives is narrower, and is the list of
+§1.2.
 
 ---
 
@@ -1303,7 +1401,9 @@ They concentrate at the front: 43.59% of layer 1's feed-forward
 neurons, 27.58% of layer 2's, 14.77% of layer 3's,
 near zero by layer 8. **In all thirty layers the dead index set of
 $W_{\text{gate}}$ equals that of $W_{\text{up}}$** --- not the same cardinality,
-the same indices. In a SwiGLU block, $h = W_{\text{down}}\!\left(\sigma(W_{\text{gate}}x)\odot W_{\text{up}}x\right)$,
+the same indices. In a gated block, $h = W_{\text{down}}\!\left(f(W_{\text{gate}}x)\odot W_{\text{up}}x\right)$
+--- this checkpoint's $f$ is a squared \textsc{relu} and not the \textsc{swiglu}
+an earlier draft named here, as §9 establishes ---
 the two are combined element-wise, so a zero
 gate row renders the matching up row irrelevant and conversely; training removed
 them in pairs. $W_{\text{down}}$ has none, the same fact along the other axis:
@@ -1405,24 +1505,29 @@ code that exists and can be analysed, the second concerns code that does not.
 We run `llvm-mca`, LLVM's static pipeline simulator, over the inner loops
 `gcc -O3 -mavx2 -mfma` actually emits for both kernels, against the
 vendor-derived scheduler models for six targets. Re-deriving the loop shapes
-reproduces §7.1's counts exactly for the baseline (21
+reproduces §7.2's counts exactly for the baseline (21
 instructions, 4 multiply-class, 128 weights) and to within one instruction for
 the packed kernel (46 against 47; the 13 multiplies and 160 weights are exact),
 the difference being a compiler version.
 
-**The model is calibrated before it is used.** Its Zen 2 prediction is
+The model is calibrated before it is used. Its Zen 2 prediction is
 $S=2.501$ against the $S=81.93/33.74=2.428$ measured on
 this host: an error of 3.0%. The script exits non-zero should that
 drift past 8%. Absolute cycle counts are optimistic, which is why only
 the ratio is carried forward --- but by how much this paper cannot say
 precisely, and an earlier draft overstated its own confidence here. It quoted
 18.01 predicted against 19.7 measured per 160-weight block, a
-6–11% band. No file records that 19.7: the figure
-implied by this paper's own two constants, 33.74\,GMAC/s at
-3.91 GHz, is $160\times3.91/33.74=18.54$
+6–11% band. That 19.7 *is* recorded --- in the
+kernel's own header, which ships publicly as `src/ternary_t5b.c`, and in
+`results/shufdig_measurement.txt` --- but it is nowhere *derived*,
+and it disagrees with the figure this paper's own two constants imply:
+33.74\,GMAC/s at
+3.91 GHz gives $160\times3.91/33.74=18.54$
 cycles, against which the model is optimistic by 2.9%. The
 19.7 would require a clock of 4.15 GHz. We report the
-derived figure and the discrepancy rather than choosing between them.
+derived figure and the discrepancy rather than choosing between them, and
+§7.7 states which of the two each vector-operations-per-cycle
+figure is backed out of.
 
 | target | packed, cyc/block | baseline, cyc/block | $S$ |
 |---|---|---|---|
@@ -1432,6 +1537,19 @@ derived figure and the discrepancy rather than choosing between them.
 | `znver5` | 11.51 | 3.76 | 2.449 |
 | `icelake-server` | 14.02 | 5.34 | 2.098 |
 | `sapphirerapids` | 14.52 | 5.01 | 2.317 |
+
+The third significant digit of that table is a property of the translation unit
+and not of the target --- the public copy of
+`results/microarch_model.txt` prints 3.77 and $S=2.441$ for
+`znver3`, `znver4` and `znver5` where this one prints 3.76
+and 2.449, because the two `i2_s` inner loops are twenty
+instructions each with an identical opcode multiset and identical memory offsets
+and differ only in register allocation and order, which `llvm-mca` prices
+at 0.01 cycles on those three targets and at zero on the other three ---
+so it costs 0.33% on $S$, and the claim the table is cited for
+survives it (`results/microarch_translation_unit.txt`, which isolates
+the effect to those twenty instructions and records the three zeros as its
+control).
 
 **These are modelled numbers, and the licence for printing them is that
 the model was tested twice.** Once in-sample, against the host it was calibrated
@@ -1456,7 +1574,7 @@ VNNI loops are written by hand: in both kernels the contraction ends in a
 performs exactly that pair fused, with the same unsigned-times-signed operand
 convention. The substitution is argued sound --- the reduction width changes
 from `int16` pairs to `int32` quadruples, leaving the horizontal sum
-invariant, and it makes the accumulator bound of §4.3 unnecessary
+invariant, and it makes the accumulator bound of §4.2 unnecessary
 --- but that is an argument, not a test. **These loops have never been
 executed.** Three caveats bound what the numbers mean.
 
@@ -1486,7 +1604,7 @@ it by 0–14\,\%: $S$ reaches 2.08 on `znver4` and
 2.51 on `icelake-server` and `sapphirerapids`. Modest, not
 decisive.
 
-**None of this is a measurement.** It also cannot become one by
+None of this is a measurement. It also cannot become one by
 recompiling: no compiler contracts `vpmaddubsw` followed by an accumulating
 `vpaddw` into `VPDPBUSD` as an idiom, so an AVX2 kernel built with
 `-march=native` on a VNNI part contains **zero `vpdpbusd`** and
@@ -1494,7 +1612,7 @@ measures AVX2 on that part. The instruction has to be written.
 
 `bench_vnni.c` now writes the instruction: `i2_s` and t5b in both
 forms, the VNNI pair contracting into `int32` accumulators, which for t5b
-also removes the fold of §4.3 entirely. It verifies with
+also removes the fold of §4.2 entirely. It verifies with
 `objdump` at run time that its own binary contains the instruction, checks
 every row against exact `int64` arithmetic before printing a rate, and
 exits 3 rather than run on a CPU without the feature. A second build models
@@ -1517,8 +1635,8 @@ so both parts are stated.
 | t5b gain from VNNI | --- | --- | $1.15\times$ |
 | runs in which $S$ rose | --- | 6 of 8 |  |
 
-**The direction is the predicted one and the mechanism is the predicted
-one.** §9.1 argued that `VPDPBUSD` must help the baseline
+The direction is the predicted one and the mechanism is the predicted
+one. §9.1 argued that `VPDPBUSD` must help the baseline
 more than the packed format, because the baseline spends 4 of its 17 vector
 operations in the contraction the instruction collapses while the packed kernel
 spends 5 of 42. The measurement agrees: $1.24\times$ against $1.15\times$, and
@@ -1532,7 +1650,7 @@ argued away. An 8.8% shift in $S$ against $\Sigma$ values ranging
 from 1.35 to 3.03 does not by itself decide
 (17) either way at any thread count.
 
-**What the static model got right, and where it was pessimistic.**
+What the static model got right, and where it was pessimistic:
 §9.1 bounded VNNI's cost at 0–14\,\% and this
 measurement lands at 8.8%, inside that band. The model predicted
 $S(\text{vnni}) = 2.08$ on `znver4` and 2.51 on the two Intel
@@ -1540,15 +1658,15 @@ targets; the measured 2.22 sits between them. Given that the model's
 negative control failed and its VNNI loops had never been executed, agreement to
 this degree is more than was claimed for it.
 
-**What remains open is a clean machine --- or a better design, which is
-what was done instead.** Six of eight is a majority because the eight runs timed
+What remains open is a clean machine --- or a better design, which is
+what was done instead. Six of eight is a majority because the eight runs timed
 the four kernels in sequence, so the AVX2 and VNNI arms of each ratio came from
-different moments on a drifting host. `bench_vnni.c` now interleaves them:
+different moments on a drifting host. `bench_vnni.c` now interleaves them
+for the reason §7.4 interleaves its arms:
 31 rounds, all four kernels measured in rapid alternation within each round with
 the starting kernel rotated, $S$ formed inside the round, and the result
-reported as a median difference with an exact two-sided sign test. A load
-excursion then reaches both arms of every ratio instead of landing on one block.
-That converts a between-condition comparison on a noisy host into a paired one,
+reported as a median difference with an exact two-sided sign test. That converts
+a between-condition comparison on a noisy host into a paired one,
 which is the design a shared machine can actually answer; the numbers above
 predate it and a dedicated part is no longer the only way to sharpen them. The claim this
 subsection supports is narrow: on real VNNI hardware the packed format's
@@ -1680,9 +1798,12 @@ Whether the resulting 25% reduction in weight traffic is
 profitable is not a property of the code. It is decided
 by (17), a comparison between a core's multiply-port throughput
 and its share of memory bandwidth, both measurable in minutes. On the part
-measured here the condition holds from four cores upward, and the deployed model
-is 9% smaller and 13–14% faster with
-bit-identical output.
+measured here the condition holds from four cores upward once the ratio is taken
+against the kernel `llama.cpp` actually dispatches rather than against its
+reference (§7.4), and the deployed model
+is 9% smaller and 11.9–13.3% faster with
+bit-identical output --- the medians over five invocations, prompt and
+generation.
 
 The same inequality predicts the result will narrow on a part with VNNI, and
 §9.2 measures that narrowing at 8.8% --- the
@@ -1702,13 +1823,23 @@ worth applying rather than an accident of the one part that produced it.
 
 # Corrections
 
-Twenty-three claims in earlier drafts of this paper were wrong and were corrected
+Twenty-nine claims in earlier drafts of this paper were wrong and were corrected
 before submission --- among them the novelty of the packing, of the depth-one
 extraction arithmetic, of the fused digit-plane contraction and of the
 per-tensor scale model, two statements about dead-neuron removal, and the assertion that a
 run on VNNI hardware would settle §9.1. Each is listed with
 what replaced it and how it was found in `CHANGELOG.md` in the repository
 below, kept there rather than here so that this document states what holds.
+
+**The concessions, canonically.**  A concession of prior art is not a
+correction in that sense, and the two lists are different lengths, so the
+concession list is fixed here and every other site in this paper matches it.
+Six constructions this work uses belong to someone else: the base-3 packing,
+the $32k+j$ interleave, the depth-one extraction arithmetic, the fused
+digit-plane contraction, the per-tensor scale model and the profitability
+condition. §1.1 states five of them against their owners and
+§3 the interleave, and the abstract and §7.8 name
+the same six and no others.
 
 **What a $\pm$ means here.**
 Three different things, and the document should say which. Around an activation
@@ -1762,8 +1893,15 @@ converted GGUF and the checkpoint itself. The integration is supplied as a patch
 against a named upstream commit rather than as copied sources, and the
 `i2_s` reference kernel used as the baseline is fetched from that commit
 by a script rather than redistributed. Everything else --- the packing, the
-kernels, the suite, all four benchmarks, the converters and every evidence file
---- builds and runs from a clone with a compiler and Python alone.
+kernels, the suite, the converters and every evidence file --- builds and runs
+from a clone with a compiler and Python alone, and so do five of the eight
+benchmarks: `bench_ports`, `bench_probe_cost`, `bench_gemm`,
+`bench_vnni` and `bench_vnni_emu`. The other three ---
+`bench_alu`, `bench_threads` and `bench_token` --- compare
+against upstream's `i2_s` kernel and therefore additionally need
+`tools/fetch_i2s_reference.sh` to have run; without it `make bench`
+skips them with a message rather than building most of its targets and exiting
+zero.
 
 # References
 - S. Ma, H. Wang, L. Ma, L. Wang, W. Wu, P. Dong, L. Zhang, J. Xue, F. Wei. *The Era of 1-bit LLMs: All Large Language Models are in 1.58 Bits*. arXiv:2402.17764, 2024.

@@ -1,0 +1,38 @@
+### STEP 1: the activation as it ships (SiLU)
+133:                LLM_FFN_SILU, LLM_FFN_PAR, il);
+=== silu_i2s : ggml-model-i2_s.gguf ===
+4.25.614.553 I Final estimate: PPL = 96.8243 +/- 3.55673
+=== silu_t5b : ggml-model-t5b.gguf ===
+4.21.357.645 I Final estimate: PPL = 96.8243 +/- 3.55673
+
+### STEP 2: one token of diff
+133:                LLM_FFN_RELU_SQR, LLM_FFN_PAR, il);
+### STEP 3: rebuild
+[ 98%] Built target llama-common
+[100%] Linking CXX shared library ../../bin/libllama-perplexity-impl.so
+[100%] Built target llama-perplexity-impl
+[100%] Linking CXX executable ../../bin/llama-perplexity
+[100%] Built target llama-perplexity
+
+### STEP 4: the same two runs under a squared rectifier
+=== relu2_i2s : ggml-model-i2_s.gguf ===
+4.24.818.106 I Final estimate: PPL = 16.7482 +/- 0.50521
+=== relu2_t5b : ggml-model-t5b.gguf ===
+4.24.272.695 I Final estimate: PPL = 16.7482 +/- 0.50521
+
+### STEP 5: put the graph back
+1
+[100%] Built target llama-perplexity-impl
+[100%] Linking CXX executable ../../bin/llama-perplexity
+[100%] Built target llama-perplexity
+
+### SUMMARY
+  silu_i2s    Final estimate: PPL = 96.8243 +/- 3.55673
+  silu_t5b    Final estimate: PPL = 96.8243 +/- 3.55673
+  relu2_i2s   Final estimate: PPL = 16.7482 +/- 0.50521
+  relu2_t5b   Final estimate: PPL = 16.7482 +/- 0.50521
+
+  The NEGATIVE CONTROL that can fail: i2_s and t5b must agree to six
+  significant figures under BOTH activations. They have always run the
+  same graph, so the comparison is unaffected by which one is right; if
+  they diverge here, something other than the activation is wrong.

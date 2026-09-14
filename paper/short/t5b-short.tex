@@ -1,0 +1,297 @@
+% t5b-short.tex -- the four-page version.
+%
+% WHY THIS FILE EXISTS, AND THE ONE RULE THAT KEEPS IT HONEST.
+% The long paper runs to a length its own build log records -- see
+% tools/check_short_parity.py, which reads both counts rather than asserting
+% them, because this comment said 27 and then 28 within one day. After six
+% prior-art concessions it spends more
+% lines conceding than claiming. That is the right document for the repository
+% and the wrong one to submit. This is the submission.
+%
+% Two documents drift. This project has been bitten by that four times -- a
+% Markdown rendering a revision behind its LaTeX, a public tree's evidence files
+% six of eight stale, a benchmark message naming targets that had moved, an
+% evidence file overwritten by a different run. So this file is gated:
+% tools/check_short_parity.py requires every numeric claim here to appear in the
+% long paper too. Correct a number there and forget it here and the gate fails.
+% It does NOT check prose, and it cannot: that is what reading is for.
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\IfFileExists{lmodern.sty}{\usepackage{lmodern}}{}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\usepackage{siunitx}
+\sisetup{group-digits=integer,group-separator={,},group-minimum-digits=4}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{What a Denser Ternary Weight Format Is Actually Worth:\\
+       a measurement on one CPU}
+\author{Justus Theile\\
+  \small Independent researcher\\
+  \small \texttt{justus.theile@gmail.com}}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Ternary language models are stored in practice at two bits per weight,
+\SI{26}{\percent} above the information content of a ternary symbol. Almost
+every mechanism for removing that excess is already published: packing five
+ternary values as the base-3 digits of a byte, recovering all five
+independently with reciprocal multiplication, contracting on the digit planes
+without materialising a weight, carrying the scale per tensor rather than per
+block, and the roofline criterion that decides when a denser code pays. We cite
+each to its owner in \S\ref{sec:not-new}. What is missing from that literature
+is not another mechanism but a measurement: what the combination is worth end to
+end, on a real checkpoint, against the format that ships with it. We supply one.
+Integrated into \code{llama.cpp} as a distinct \code{ggml} type, the code reaches
+\num{1.60755} bits per weight on \code{BitNet-b1.58-2B-4T} --- \SI{4.7}{\percent}
+below the nearest published format on the ternary payload,
+\SI{1.9}{\percent} of the file --- with output bit-identical and perplexity
+agreeing with the two-bit baseline to six significant figures over
+\num{20480} tokens. The profitability criterion is measured rather than assumed,
+one level down the memory hierarchy from where it was first stated, and both of
+its terms are taken from the part the kernel runs on; the crossing it predicts
+is observed between four and six threads for the isolated kernels, while the
+full model already wins at four --- because the baseline \code{llama.cpp}
+dispatches is itself \num{1.6} times slower than the reference the ratio was
+taken against. Three results are new. A cheaper
+decode is worth $\num{1.2254}\times$ on the contraction and \emph{nothing} for
+prompt processing, because a strip of width eight amortises the decode away
+entirely. The baseline kernel folds its accumulator ten times more often than
+its own bound requires, at a measured cost of \SI{7.5}{\percent}. And
+\SI{4.76}{\percent} of the checkpoint's feed-forward neurons are identically
+zero, with the gate and up index sets coinciding in all thirty layers and none
+revived by an independent fine-tune. All figures are from a single AVX2 part
+without VNNI. Every one of them is recomputed by a script in the repository,
+but not every one from a clone alone: the throughput figures, the perplexity
+and the dead-neuron census read the checkpoint, which is not distributed there.
+\end{abstract}
+
+\section{What is new here, and what is not}\label{sec:not-new}
+
+The format below places five ternary values in one byte as the digits of a
+base-3 integer, $3^{5}=243<256$, at \num{1.600} bits per weight. That
+construction is not ours and neither is most of what surrounds it. It is
+\code{llama.cpp}'s \code{TQ1\_0}~\cite{tq10}; it is published with a correctness
+theorem as Spectra~1.1's \code{TQ1}~\cite{spectra}; it appears a year before \code{TQ1\_0}
+in statistical genomics, with the same bandwidth motivation and the same
+positional weights~\cite{miraculix}; and it appears fifteen years before ternary
+language models in heuristic search~\cite{breyerkorf}. Recovering all five
+digits \emph{independently} from the packed byte, table-free, is NTRU's
+reference implementation since 2019, at exactly these parameters~\cite{ntru},
+and is what \code{TQ1\_0}'s own NEON path does. Contracting on the digit planes
+so that no weight is materialised is \code{TQ1\_0}'s on both instruction sets.
+Carrying one scale per tensor instead of one per block was \code{block\_q1\_3},
+on the pull request that became \code{TQ1\_0}. The interleave that keeps the
+access pattern unchanged is \code{i2\_s}'s at two bits and \code{TQ1\_0}'s at
+\num{1.600}. And the criterion for when a denser code pays is Equation~1 of
+Zukowski et al.~\cite{zukowski}, which already applies it as an adopt-or-reject
+rule for a codec.
+
+We found each of these after building, not before, and the repository's
+\code{CHANGELOG.md} records every one with how it was found. Stating them here
+rather than in a footnote is the point of the section: what follows is
+worth reading as a measurement, and a measurement is worth less when the reader
+has to work out for himself what part of it is a claim.
+
+\paragraph{What is left.} Four things, each small and each measured.
+A block length of $160=32\times5$, which takes no remainder byte where
+\code{TQ1\_0}'s \num{64} does: \num{4546560} bytes, \SI{0.38}{\percent} of
+the file. Separately, and worth no bytes at all, a scale riding in the
+baseline's existing 32-byte tail, so the format is drop-in where the nearest
+scale-free predecessor needed a graph node and a loader change. The AVX2 instantiation of the depth-one decode,
+which upstream has on NEON and, through a low-half 16-bit multiply, in its
+four-element tail --- but not in its AVX2 main path, where it names the question
+open in its own source.
+A column-blocked matrix--matrix kernel, which the nearest prior format has no
+equivalent of. And the measurements of \S\ref{sec:results}, which are the
+reason for the paper.
+
+\section{The format}\label{sec:format}
+
+Let $c_i=w_i+1\in\{0,1,2\}$ be the shifted code of weight $w_i$. A block of
+$160$ weights becomes 32 bytes,
+\begin{equation}
+b_{j}=\sum_{k=0}^{4}c_{32k+j}\,3^{k},\qquad j=0,\dots,31,
+\label{eq:pack}
+\end{equation}
+so $b_{j}\le 2\sum_{k}3^{k}=242$ and every byte is a legal base-3 word with
+thirteen codes to spare. The interleave $32k+j$ is the baseline's: digit plane
+$k$ addresses 32 \emph{consecutive} activations, and the access pattern is
+therefore unchanged from the format replaced. Achieved density on the shipped
+checkpoint is \num{1.60755} bits per weight, the excess over \num{1.600} being
+tail padding at $K=\num{6912}$ plus one 32-byte record per tensor.
+
+\section{Decoding without a table}\label{sec:kernel}
+
+Because $b\le\num{242}$, all four quotients $\lfloor b/3^{j}\rfloor$ lie inside
+the exactness range of 16-bit reciprocal multipliers, so each can be taken
+\emph{independently} from the original byte rather than from its predecessor:
+$\lfloor b/3\rfloor$, $\lfloor b/9\rfloor$, $\lfloor b/27\rfloor$ and
+$\lfloor b/81\rfloor$ come from one \code{vpmulhuw} each with multipliers
+\num{21846}, \num{7282}, \num{2428} and \num{811}. The digits follow by
+subtraction, $d_{k}=q_{k}-3q_{k+1}$, and each plane is handed straight to
+\code{vpmaddubsw} so that no weight is ever written to a register as a value.
+Dependency depth is one rather than five. Against the serial form this
+\emph{encoding} admits the instruction count is identical --- a chain
+$q_{j+1}=\code{mulhi}(q_{j},\num{21846})$ issues the same eight multiplies ---
+so depth one costs nothing here; what it relieves is latency, which
+\S\ref{sec:results} shows is not the binding resource.
+
+\paragraph{The accumulator bound.} A \code{vpmaddubsw} lane receives two
+products of at most $2\times128$, so a 16-bit lane grows by at most 512 per
+plane and \num{2560} per block, and folding to 32-bit every $\Phi$ blocks is
+safe iff $\num{2560}\,\Phi\le\num{32767}$, hence $\Phi=12$. The range
+$d\in\{0,1,2\}$ on which that rests is a consequence of $b\le\num{242}$ and not
+a property of a byte: the thirteen bytes $243\ldots255$ give $d_{4}=3$, which
+would bound a lane at \num{2816} and overflow the fold. What the byte-wide
+subtraction needs is weaker and does hold for all 256 values --- no digit
+subtraction borrows.
+
+\section{When a denser code pays}\label{sec:condition}
+
+Let the baseline store at $\beta_{A}$ bits and the candidate at
+$\beta_{B}<\beta_{A}$, and let $A_{A}>A_{B}$ be the arithmetic rates the two
+kernels attain with memory taken out of the measurement. With
+$F=\beta_{A}/\beta_{B}$, $S=A_{A}/A_{B}$ and a surplus
+$\Sigma=A_{A}\beta_{A}/(8B)$ for memory bandwidth $B$, the denser code is faster
+exactly when
+\begin{equation}
+S<\Sigma .
+\label{eq:condition}
+\end{equation}
+The criterion is Zukowski's; what is new is that both of its terms are measured
+here, and at a level of the hierarchy where they had not been. Two points
+decide whether the measurement is worth anything. $A$ must be the \emph{rate}
+and not the port ceiling: the baseline attains \SI{63}{\percent} of its
+\num{130.9}\,GMAC/s ceiling and the packed kernel \SI{67}{\percent} of its
+\num{50.5}, and substituting ceilings would raise every $\Sigma$ by half and
+reverse the prediction at two and four threads. And $\Sigma$ is not a constant:
+at six threads it is \num{3.03} on an idle host and \numrange{1.65}{2.38}
+across five runs under load. $S=\num{2.43}$ is above every one of those loaded
+values and below the idle one, so the condition holds at six threads only while
+the machine is quiet.
+
+\section{Measurements}\label{sec:results}
+
+All figures are from one Ryzen~5~3600 (Zen~2, AVX2 and FMA, no VNNI, six cores).
+
+\paragraph{Density and losslessness.} The file falls from
+\SI{1.10}{\gibi\byte} to \SI{1.00}{\gibi\byte}; the ternary payload falls
+\SI{4.7}{\percent} against the nearest published format. Output is
+bit-identical and perplexity agrees to six significant figures over
+\num{20480} tokens of WikiText-2. A suite of \num{177734} assertions runs from
+a clone with a compiler alone.
+
+\paragraph{Throughput, and where it comes from.} At four threads,
+\code{llama-bench} gives a median $\num{1.119}\times$ prompt and
+$\num{1.133}\times$ generation over five invocations, faster in five of five;
+the per-invocation spread runs to $\num{1.253}$. The decomposition comes from one run that times both the matmuls and
+the wall clock of both arms:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+ & wall & matmuls & share & the rest \\
+\midrule
+baseline & \SI{42.80}{\milli\second} & \SI{21.18}{\milli\second} & \SI{49.5}{\percent} & \SI{21.6}{\milli\second} \\
+this work & \SI{38.32}{\milli\second} & \SI{16.70}{\milli\second} & \SI{43.6}{\percent} & \SI{21.6}{\milli\second} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The last column is identical between the arms \emph{by construction}: only the
+packed arm carries a counter, and the baseline's matmul time is defined as its
+wall clock minus the other arm's non-matmul time. The table is a budget and not
+a cross-check --- it shows that the untouched \SI{21.6}{\milli\second} is the
+larger half of a token, so a format acting on the smaller half is bounded by
+that. The matmul ratio itself is measured on both arms at one dispatch site over
+nine interleaved rounds: $\num{1.257}$ median, the baseline slower in 9 of 9.
+The byte ratio \num{1.244}, which shares no apparatus with a clock, agrees.
+
+\paragraph{A cheaper decode, and the width at which it stops mattering.}
+Deriving two of the five digits from $q_{3}$ with \code{vpshufb} --- legal
+because $q_{3}\le9$ is a nibble --- removes one multiplier and six vector
+operations, $43\to37$, bit-identically. It is off by default; every other figure in this paper is from the build
+without it. It is worth $\num{1.2254}\times$ on the contraction, median of fifteen interleaved rounds with the untouched baseline
+kernel measured in the same binaries as a control, $p=\num{0.00098}$. It is
+worth \emph{nothing} for prompt processing, and the reason is structural: the
+matrix--matrix kernel decodes each block once and spreads it over the strip, so
+the gain is $\num{1.1608}\times$ at one activation column, $\num{1.1363}\times$
+at four, and by width eight both arms saturate at the same rate. A decode
+improvement is a generation improvement only.
+
+\paragraph{Two defects in the baseline kernel.} Its dispatched path folds the
+int16 accumulator once per 128-weight block where its own operands license once
+per ten, costing a measured \SI{7.5}{\percent} with identical perplexity. And
+its reference kernel folds every 32 blocks over four planes, up to
+$128\times508=\num{65024}$ against a \num{32767} ceiling; it is correct only
+because signed activations cancel, and removing the cancellation makes it
+disagree with exact arithmetic in \num{11998} of \num{12000} rows.
+
+\paragraph{Dead neurons.} \SI{4.76}{\percent} of the checkpoint's feed-forward
+neurons are identically zero. The dead index sets of the gate and up projections
+coincide in all thirty layers, and an independent fine-tune revives none of
+them. Removing them is not free: the sub-layer norm divides by the root mean
+over all \num{6912} entries, so deletion rescales the output unless the divisor
+is pinned.
+
+\section{Limitations}\label{sec:limits}
+
+One microarchitecture, and the decisive instruction is absent from it: with
+\code{VPDPBUSD} the contraction collapses into one instruction and the arithmetic
+ratio this paper turns on would change. A reviewer's run on Intel hardware puts
+it \SI{8.8}{\percent} higher, the direction predicted, on a host whose spread
+exceeds the effect. The absolute perplexity of this checkpoint is not reported:
+its \code{GGUF} needs two metadata fields supplied by hand, and the graph
+\code{llama.cpp} builds for its architecture applies \code{SiLU} where the
+checkpoint's own \code{config.json} declares \code{relu2} --- substituting it
+moves the perplexity from \num{96.8243} to \num{16.7482}. Neither reaches the
+comparison: both arms run the same graph, so a wrong activation cancels exactly,
+which is why the identity result survives it. The \num{1.6} bits are the
+weights only; the tied \code{f16} embedding is \SI{55.3}{\percent} of the file
+and this format does not touch it.
+
+\section*{Availability}
+Code, kernels, benchmarks, converters and every evidence file are at
+\url{https://github.com/purpleskulll/bitnet-t5b} under Apache~2.0. A clone
+builds and runs the suite with a compiler alone. \code{shufdig\_ab.sh}
+reproduces the decode measurement, \code{mutation\_test.sh} the correctness
+argument, and \code{tools/check\_short\_parity.py} the agreement between this
+paper and the long one. The long version of this paper, with the proofs,
+the mutation testing, the failed variants and the full correction history, is in
+the same repository.
+
+\begin{thebibliography}{9}
+% Six entries where there were five: without this the last one takes a fifth
+% page for two lines. Spacing only -- no entry is abbreviated or dropped.
+\setlength{\itemsep}{0pt}
+\bibitem{tq10} compilade. \emph{ggml-quants: ternary packing for TriLMs and
+  BitNet b1.58}. llama.cpp pull request \#8151, August 2024.
+\bibitem{spectra} T.~Vaidhya, A.~Kaushal, V.~Jain, F.~Couture-Harpin,
+  P.~Shishodia, M.~Behbahani, Y.~Nevmyvaka, I.~Rish. \emph{Spectra 1.1: Scaling
+  Laws and Efficient Inference for Ternary Language Models}. arXiv:2506.23025,
+  2025.
+\bibitem{miraculix} A.~Freudenberg, J.~Vandenplas, M.~Schlather, T.~Pook,
+  R.~Evans, J.~ten~Napel. \emph{Accelerated matrix-vector multiplications for
+  matrices involving genotype covariates with applications in genomic
+  prediction}. Frontiers in Genetics 14:1220408, 2023.
+\bibitem{breyerkorf} T.~M.~Breyer, R.~E.~Korf. \emph{1.6-Bit Pattern
+  Databases}. Proceedings of the AAAI Conference on Artificial Intelligence
+  24(1):39--44, 2010.
+\bibitem{ntru} J.~M.~Schanck et al. \emph{NTRU reference implementation},
+  \code{ref-common/pack3.c}. \url{https://github.com/jschanck/ntru}, 2019.
+\bibitem{zukowski} M.~Zukowski, S.~Heman, N.~Nes, P.~Boncz. \emph{Super-Scalar
+  RAM-CPU Cache Compression}. ICDE, 2006.
+\end{thebibliography}
+
+\end{document}

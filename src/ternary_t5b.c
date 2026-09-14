@@ -213,8 +213,19 @@ static inline __m256i t5b_contract(__m256i acc, __m256i plane, const int8_t *a)
  * That IS the ceiling: this is a Zen 2 part, every 256-bit integer vector op
  * splits into two 128-bit uops over four FP pipes, so ~2 per cycle is the
  * hardware limit and the small excess is the activation load folded into
- * vpmaddubsw as a memory operand. The kernel is bound by the TOTAL vector op
- * count, and the only thing that moves it is removing ops.
+ * vpmaddubsw as a memory operand.
+ *
+ * This header used to end here, claiming the kernel is bound by the TOTAL
+ * vector op count and that the only thing which moves it is removing ops. That
+ * is incomplete, and the SHUFDIG variant below measured by how much. Trading
+ * the 811 multiplier for two vpshufb lookups takes the loop from 43 vector ops
+ * to 37 and from 13 multiplier-port ops to 11. On the op count alone the
+ * speedup should be 43/37 = 1.1622; measured over fifteen interleaved rounds it
+ * is 1.2254, outside that by more than the control arm's spread
+ * (results/shufdig_measurement.txt). Removing ops is not the only lever: WHICH
+ * PORT they came off matters too, because the multiplier port is the scarcer
+ * of the two even while the total op count is what binds. Both statements are
+ * true at once, and only the first one was written down.
  *
  * That is why this file is written the way it is, and the alternatives are on
  * record because each one was built and timed (GMAC/s/core, taskset -c 5):

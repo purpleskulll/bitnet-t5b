@@ -1,0 +1,53 @@
+==================================================================
+ WHERE llama.cpp's i2_s MATMUL TIME GOES
+==================================================================
+
+  Reproduce: build with -DBITNET_I2S_PHASES (scripts/build_insitu.sh
+             then re-configure with that flag), run llama-bench on the
+             i2_s model, read the counters from the [bitnet-t5b] line.
+
+  §7.4 measures llama.cpp's i2_s path at 1.257x the cost of t5b's and
+  names three candidates for where that goes -- dispatch, the accumulator
+  fold, and the per-column post-processing -- without separating them,
+  because one probe at one site yields one number. Two more inside
+  tinyBLAS_I2S_AVX do separate them: one around the contraction loop, one
+  around the post-processing. DISPATCH is the remainder, measured by
+  difference, because a probe around the call would be the call.
+
+  THE PROBES ARE OFF BY DEFAULT AND THAT IS NOT TIDINESS. They fire once
+  per RM x RN tile, far more often than the dispatch-site probe, and they
+  instrument ONE arm -- so leaving them in inflates the i2_s side of the
+  ratio. Measured on this host: 1.379 with them against 1.257 without, a
+  10 % artefact entirely of the instrument's making. The decomposition
+  and the ratio therefore come from two different builds, by design.
+
+  run       dispatch-site      contraction        post-proc
+  1           11144914200      10526066073        344706085
+  2           11638921680      10956453989        385562197
+  3           11833963848      11178760661        369690157
+  4           11193180408      10590615522        334934355
+  5           10942136208      10333490010        330082200
+
+  mean over 5 runs:
+    contraction       94.4 %
+    post-processing    3.1 %
+    dispatch (rest)    2.5 %
+
+  READ: the cost is the contraction loop itself. Neither the dispatch nor
+  the per-column post-processing is where llama.cpp's i2_s path spends
+  its time, so the 1.257 reflects the inner loop's own arithmetic and
+  memory traffic rather than overhead around it. Two of §7.4's three
+  candidates are ruled out by these numbers. The third -- the accumulator
+  fold -- is answered by READING the kernel instead: tinyBLAS_I2S_AVX has no
+  32-block fold at all. Its _mm256_madd_epi16 sits inside the block loop, so
+  it folds int16 into int32 once per 128-weight block, where the vec_dot
+  reference accumulates 32 blocks first (group32_num = nb / 32). The fold is
+  therefore not a periodic interruption of the contraction; it is part of
+  every block, and it is inside the 94.4 %.
+
+  A CONSEQUENCE FOR SECTION 7.1. The int16 overflow measured there --
+  11,998 of 12,000 rows at K = 6912 -- is a property of the REFERENCE kernel,
+  which has the 32-block group. The path a real run dispatches does not have
+  it and cannot overflow that way. The paper said "llama.cpp's i2_s AVX2
+  kernel" without distinguishing the two, which reads as the stronger claim;
+  it now names the reference.

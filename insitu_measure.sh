@@ -39,10 +39,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # footnote names it as the reproduction path for a whole subsection -- the exact
 # failure ("someone looks for the gate, cannot find it, and then doubts
 # everything else") this project has a rule about.
-if [ ! -d "$ROOT/src_modifications" ] && [ ! -d "$ROOT/src" ] \
-   && [ -d "$(dirname "${BASH_SOURCE[0]}")/src" ]; then
-    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
+#
+# SECOND FAILURE MODE, and the reason this no longer consults the parent at all.
+# The previous form corrected ROOT only when the parent had NEITHER src/ nor
+# src_modifications/. So a clone with any directory named src/ sitting BESIDE it
+# -- another checkout, a stray build tree -- made that test true, the correction
+# never fired, and every path below kept resolving outside the repository. Here
+# that surfaces as "missing: .../.verify/insitu/build/bin/llama-bench" and exit
+# 2, which reads as "you did not build it" when the build is there and only the
+# ROOT is wrong. The same hole was reproduced in a scratch tree in the sibling
+# script shufdig_ab.sh, where it exits 2 claiming a file is missing that is in
+# plain view.
+#
+# Asking the script's OWN directory cannot be fooled by a neighbour: a neighbour
+# is, by definition, not where the script is.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SELF/src" ] || [ -d "$SELF/src_modifications" ]; then ROOT="$SELF"; fi
 BENCH="$ROOT/.verify/insitu/build/bin/llama-bench"
 M_I2S="$ROOT/models/ggml-model-i2_s.gguf"
 M_T5B="$ROOT/models/ggml-model-t5b.gguf"

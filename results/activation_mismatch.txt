@@ -1,0 +1,182 @@
+==============================================================================
+ THE GRAPH llama.cpp BUILDS FOR THIS ARCHITECTURE IS PROBABLY NOT THE MODEL'S
+ 2026-09-13
+==============================================================================
+
+WHAT WAS FOUND, verified in source here rather than taken from the agent that
+raised it.
+
+  .verify/insitu/3rdparty/llama.cpp/src/models/bitnet.cpp
+      build_ffn(..., LLM_FFN_SILU, LLM_FFN_PAR, il);
+
+  .verify/rec-current/gpu/model.py:165,195      (the reference released with
+                                                 the checkpoint)
+      def squared_relu(x: torch.Tensor) -> torch.Tensor:
+      inner = self.ffn_sub_norm(squared_relu(x1) * x3)
+
+  .verify/insitu/3rdparty/llama.cpp/src/llama-graph.h:46
+      LLM_FFN_RELU_SQR,        -- exists, and five other architectures use it
+
+THE FILE DOES NOT SETTLE IT, which is the part that matters. The checkpoint's
+GGUF carries 24 metadata keys. Read directly from the header here:
+
+  general.architecture = bitnet-b1.58, general.name = bitnet2b, vocab_size,
+  context_length, embedding_length, block_count, feed_forward_length,
+  rope.dimension_count, attention.head_count, attention.head_count_kv,
+  attention.layer_norm_rms_epsilon, rope.freq_base, general.file_type,
+  general.quantization_version, and ten tokenizer.* keys.
+
+There is NO activation key of any kind -- no match for activ, relu, silu, act_
+or gelu anywhere in the key set. So the loader's per-architecture default is the
+only thing choosing the activation, and nothing in the file contradicts it or
+confirms it.
+
+WHAT THIS DOES NOT TOUCH, and the reason is structural rather than hopeful:
+both arms run the SAME graph. Bit-identity, the six-significant-figure
+perplexity agreement, the density figures and every rate in this repository are
+comparisons between two formats evaluated under one loader, so a wrong
+activation cancels exactly. The paper already declined to report an absolute
+perplexity as a result; this is a second, concrete reason for that refusal
+beside the tokenizer-metadata one it already gave.
+
+SETTLED, 2026-09-13. One token of diff, then llama-perplexity on both arms,
+same forty chunks, same session. Full log: results/activation_run_2026-09-13.log
+
+                        i2_s                     t5b
+  LLM_FFN_SILU      96.8243 +/- 3.55673      96.8243 +/- 3.55673
+  LLM_FFN_RELU_SQR  16.7482 +/- 0.50521      16.7482 +/- 0.50521
+
+A factor of 5.78. The activation WAS the cause. The 96.8243 this repository has
+quoted throughout describes a mis-built graph, not this checkpoint.
+
+THE NEGATIVE CONTROL HELD, and it is the reason this changes nothing else. The
+two arms agree to six significant figures under BOTH activations. They have
+always run the same graph, so a wrong activation cancels exactly in the
+comparison; had they diverged here, something other than the activation would
+have been wrong. Every rate, every density figure and the bit-identity result
+are comparisons under one loader and are untouched.
+
+The graph was restored afterwards and the tree rebuilt, so the working copy is
+back on LLM_FFN_SILU -- verified by grep, not assumed.
+
+Note that it is not a discovery: microsoft/BitNet#588 reports the same
+mismatch. What is unpublished is this checkpoint's perplexity under this
+harness, which is exactly the number the paper declines to quote.
+
+A SECOND PAYOFF IF IT HOLDS, recorded so the reason is not lost. A squared
+rectifier produces EXACTLY zero, not a small number, so the gate's zero
+structure would be exact and skippable without a threshold or a predictor.
+That is the only large remaining speed axis the improvement sweep found, and it
+is gated entirely on this one-token experiment. Its ceiling, computed from the
+in-situ decomposition, is 25.47 % of ternary MACs, i.e. about 11 % of a token --
+and the published sparsity figure it would lean on (67.5 %) is a 7B number from
+BitNet a4.8 (arXiv:2411.04965), whose own table runs 21.8 % to 84.2 % across
+scales. Extrapolating it to a 2.4B checkpoint is not justified; the per-layer
+fraction has to be measured, and it falls out of the same rebuild for free.
+
+
+==============================================================================
+ UPSTREAM STATUS, established 2026-09-13 -- AND WHY NO PULL REQUEST WAS FILED
+==============================================================================
+
+A pull request was prepared and then NOT filed, because it would have been the
+third attempt at a change that has already been rejected twice. Verified here
+by fetching the sources, not taken from the agent that found them.
+
+STILL PRESENT. ggml-org/llama.cpp master's src/models/bitnet.cpp still calls
+build_ffn with LLM_FFN_SILU, LLM_FFN_PAR, with no conditional on architecture.
+
+ALREADY ATTEMPTED, TWICE, BOTH CLOSED UNMERGED.
+  ggml-org/llama.cpp#25885  "model : bitnet uses squared-ReLU FFN, not SILU",
+      hmeiland, 2026-07-19. The exact blanket edit, with the same measurement
+      in a different harness: wikitext-2 perplexity 99.8 -> 17.1 across several
+      CPU backends. Closed unmerged.
+  ggml-org/llama.cpp#26751  the LLM_KV_HIDDEN_ACT route -- the same design this
+      project had arrived at independently. Also closed unmerged.
+
+AND THE DESIGN QUESTION IS ALREADY DECIDED, on the record, by a code owner:
+
+    "Merging #25769 was a mistake, BitNetForCausalLM [Microsoft] !=
+     BitnetForCausalLM [1bitLLM], the latter (which is the one we support)
+     uses SiLU.
+
+     If the only difference truly is only the activation though this can be
+     remedied by the newly added LLM_KV_HIDDEN_ACT metadata, I SUGGEST
+     PREPARING A PR WITH PROPER SUPPORT FOR MICROSOFT BITNET USING THAT."
+                                                            -- CISC, on #25885
+
+!! CORRECTION, 2026-09-14. THE PARAGRAPH THAT FOLLOWED THIS QUOTE WAS WRONG,
+!! AND IT WAS WRONG BECAUSE THIS FILE QUOTED ONLY THE FIRST HALF OF IT.
+!!
+!! It read: "the blocker is not a missing patch; it is that upstream regards
+!! the Microsoft checkpoint as out of scope for that architecture."
+!!
+!! Upstream regards the BLANKET EDIT as wrong, which is a different thing. The
+!! second half of the same comment -- restored above, fetched from the API on
+!! 2026-09-14, not remembered -- asks in as many words for a PR on the metadata
+!! route. The door was never closed; the first half of a sentence was mistaken
+!! for the whole of it.
+!!
+!! And #26751, the one attempt at that route, WAS CLOSED BY ITS OWN AUTHOR:
+!!     gh api repos/ggml-org/llama.cpp/issues/26751/events
+!!     -> closed_by: msrovani at 2026-08-13T18:02:00Z
+!! Its entire review history is a bot notice that the PR template was not
+!! filled in, and one question from taronaeo asking whether it duplicated
+!! #25885. No maintainer ever assessed it on merit. Calling it "closed
+!! unmerged" beside #25885 put a self-withdrawn PR and a rejected one in the
+!! same sentence, and that is what produced the false conclusion.
+!!
+!! So the blocker IS a missing patch: specifically a metadata-route patch that
+!! respects the PR template, keeps SiLU as the default for the ~20 1bitLLM
+!! repacks in circulation, and selects RELU_SQR only when the GGUF says relu2.
+!! That is exactly what the code owner asked for, and nobody has filed it.
+
+The first half of the objection stands and must survive any patch: our own
+investigation reaches it from the other direction. 1bitLLM/bitnet_b1_58-{large,
+xl,3B} declare "hidden_act": "silu" and their bundled modeling_bitnet.py reads
+it into a SwiGLU MLP, and roughly twenty GGUF repacks of them are in
+circulation on the "bitnet" arch string. A blanket edit miscalibrates every
+one. This is why the metadata route is the only admissible fix, and why a
+third filing of the blanket edit would deserve to be closed a third time.
+
+VERIFIED AGAIN 2026-09-14, against the live API rather than this file:
+  - ggml-org/llama.cpp master src/models/bitnet.cpp:132 still passes
+    LLM_FFN_SILU, LLM_FFN_PAR. Unconditional.
+  - LLM_KV_HIDDEN_ACT exists in master (3 code hits).
+  - #25885 CLOSED 2026-07-19. Searching open issues for "bitnet relu"
+    returns nothing related: no one is tracking this upstream today.
+
+STILL OPEN ELSEWHERE, where the report belongs:
+  microsoft/BitNet#588  (open) the same defect, four independent confirmations
+      across x86, ARM and Apple, I2_S, TL1 and F16.
+  microsoft/BitNet#602  (open) a second independent report.
+  microsoft/BitNet#604  (open PR) a submodule bump depending on an unmerged
+      fork change.
+
+WHAT THIS PROJECT ACTUALLY ADDS: an independent confirmation at a DIFFERENT
+quantisation (t5b at 1.60755 bits, alongside i2_s), and the observation that
+the two formats agree to six significant figures under BOTH activations -- so
+the defect is in the graph and not in any quantisation path, which none of the
+existing reports establishes.
+
+That was posted as a comment on microsoft/BitNet#588 on 2026-09-13
+(purpleskulll, 4209 characters), which was the right venue for a confirmation.
+
+WHAT IS STILL NOT DONE, and is now the actionable item: the upstream PR on the
+metadata route. It did not seem available while this file misread the code
+owner's comment as a closed door. It is available, it was explicitly invited,
+and the one previous attempt was withdrawn by its own author without review.
+Its shape is fixed by the objection it has to survive:
+
+  - converter writes <arch>.hidden_activation for the bitnet architecture,
+    read from the HF config's hidden_act (the key exists there);
+  - "relu2" -> LLM_FFN_RELU_SQR added to LLM_FFN_OP_TYPES_FROM_STRING;
+  - models/bitnet.cpp reads hparams.llm_ffn_op, DEFAULTING TO LLM_FFN_SILU
+    when the key is absent -- which is what keeps every existing 1bitLLM
+    repack correct and is the whole reason the blanket edit was refused;
+  - the PR template filled in, since that is what the bot flagged on both
+    previous attempts.
+
+Filing it is an outward-facing action and is the owner's to take. It is also
+the only one of the three venues where this project would be contributing a
+FIX rather than a further confirmation of a defect that already has four.

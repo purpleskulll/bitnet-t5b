@@ -1,0 +1,35 @@
+# run: 2026-09-03T22:08:11Z  host load: 3.28 6.45 15.94
+# Numbers from different runs are NOT comparable: this host is shared,
+# and within-arm spread has ranged from 2% to 146% depending on load.
+bench_ternary: n=4096, single thread, 7 reps x >=0.25s per case
+weight footprints: u8 = rows*n bytes, p2b = rows*n/4 bytes
+estimator = MINIMUM over reps (contention can only slow a sample)
+
+rows=64      weights=262144      u8=   0.2 MiB  p2b=   0.1 MiB  (L2 resident (512 KiB/core))
+  fp32 FMA (baseline)    fp32   fp32       0.020 ms     12.97 GMAC/s    51.88 GB/s   [med 0.020 max 0.020 ms, spread 1%]
+  ternary u8 / a32       int8   int32      0.011 ms     23.42 GMAC/s    23.42 GB/s   [med 0.012 max 0.013 ms, spread 12%]
+  ternary p2b / a32      2-bit  int32      0.019 ms     13.70 GMAC/s     3.42 GB/s   [med 0.020 max 0.020 ms, spread 5%]
+  ternary u8 / a8        int8   int8       0.005 ms     54.74 GMAC/s    54.74 GB/s   [med 0.005 max 0.006 ms, spread 17%]
+  ternary p2b / a8       2-bit  int8       0.005 ms     52.26 GMAC/s    13.06 GB/s   [med 0.005 max 0.005 ms, spread 6%]
+
+rows=1024    weights=4194304     u8=   4.0 MiB  p2b=   1.0 MiB  (L3 resident (16 MiB/CCX))
+  fp32 FMA (baseline)    fp32   fp32       0.547 ms      7.66 GMAC/s    30.66 GB/s   [med 0.589 max 0.637 ms, spread 16%]
+  ternary u8 / a32       int8   int32      0.179 ms     23.37 GMAC/s    23.37 GB/s   [med 0.184 max 0.188 ms, spread 5%]
+  ternary p2b / a32      2-bit  int32      0.308 ms     13.61 GMAC/s     3.40 GB/s   [med 0.316 max 0.323 ms, spread 5%]
+  ternary u8 / a8        int8   int8       0.078 ms     53.55 GMAC/s    53.55 GB/s   [med 0.083 max 0.085 ms, spread 9%]
+  ternary p2b / a8       2-bit  int8       0.081 ms     51.82 GMAC/s    12.95 GB/s   [med 0.082 max 0.085 ms, spread 5%]
+
+rows=8192    weights=33554432    u8=  32.0 MiB  p2b=   8.0 MiB  (DRAM (exceeds the 16 MiB CCX slice))
+  fp32 FMA (baseline)    fp32   fp32       5.377 ms      6.24 GMAC/s    24.96 GB/s   [med 5.608 max 6.558 ms, spread 22%]
+  ternary u8 / a32       int8   int32      2.207 ms     15.20 GMAC/s    15.20 GB/s   [med 2.313 max 2.443 ms, spread 11%]
+  ternary p2b / a32      2-bit  int32      2.467 ms     13.60 GMAC/s     3.40 GB/s   [med 2.525 max 2.644 ms, spread 7%]
+  ternary u8 / a8        int8   int8       1.567 ms     21.41 GMAC/s    21.41 GB/s   [med 1.685 max 1.975 ms, spread 26%]
+  ternary p2b / a8       2-bit  int8       0.645 ms     51.99 GMAC/s    13.00 GB/s   [med 0.692 max 0.735 ms, spread 14%]
+
+rows=65536   weights=268435456   u8= 256.0 MiB  p2b=  64.0 MiB  (DRAM)
+  fp32 FMA (baseline)    fp32   fp32      41.269 ms      6.50 GMAC/s    26.02 GB/s   [med 43.359 max 52.471 ms, spread 27%]
+  ternary u8 / a32       int8   int32     17.576 ms     15.27 GMAC/s    15.27 GB/s   [med 17.961 max 19.531 ms, spread 11%]
+  ternary p2b / a32      2-bit  int32     19.994 ms     13.43 GMAC/s     3.36 GB/s   [med 20.067 max 20.586 ms, spread 3%]
+  ternary u8 / a8        int8   int8      12.720 ms     21.10 GMAC/s    21.10 GB/s   [med 13.216 max 14.261 ms, spread 12%]
+  ternary p2b / a8       2-bit  int8       6.095 ms     44.05 GMAC/s    11.01 GB/s   [med 6.259 max 6.592 ms, spread 8%]
+

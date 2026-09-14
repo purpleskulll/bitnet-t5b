@@ -43,10 +43,21 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # footnote names it as the reproduction path for a whole subsection -- the exact
 # failure ("someone looks for the gate, cannot find it, and then doubts
 # everything else") this project has a rule about.
-if [ ! -d "$ROOT/src_modifications" ] && [ ! -d "$ROOT/src" ] \
-   && [ -d "$(dirname "${BASH_SOURCE[0]}")/src" ]; then
-    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-fi
+#
+# SECOND FAILURE MODE, and the reason this no longer consults the parent at all.
+# The previous form corrected ROOT only when the parent had NEITHER src/ nor
+# src_modifications/. So a clone with any directory named src/ sitting BESIDE it
+# -- another checkout, a stray build tree -- made that test true, the correction
+# never fired, and the script exited 2 on a diagnosis that was simply false:
+# "ternary_t5b.c not found in either layout", with src/ternary_t5b.c in plain
+# view inside the clone. Reproduced in a scratch tree before this was changed.
+# A wrong diagnosis costs more than a crash, because it sends the reader to look
+# at the kernel instead of at the path.
+#
+# Asking the script's OWN directory cannot be fooled by a neighbour: a neighbour
+# is, by definition, not where the script is.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SELF/src" ] || [ -d "$SELF/src_modifications" ]; then ROOT="$SELF"; fi
 ROUNDS="${1:-15}"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 CF="-O3 -mavx2 -mfma -march=native -std=c11"

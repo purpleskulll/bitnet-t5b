@@ -38,12 +38,19 @@ what is actually different:
 |---|---:|---:|---|
 | bits/weight | 2.000 | **1.600** | −20% |
 | model file | 1.10 GiB | **1.00 GiB** | −102.2 MB |
-| `pp512` @ 4 threads | 119.65 ± 2.27 t/s | **135.45 ± 1.21** | **1.132×** |
-| `tg128` @ 4 threads | 22.56 ± 1.26 t/s | **25.78 ± 0.87** | **1.143×** |
+| `pp512` @ 4 threads | 119.65 ± 2.27 t/s | **135.45 ± 1.21** | **1.119×** |
+| `tg128` @ 4 threads | 22.56 ± 1.26 t/s | **25.78 ± 0.87** | **1.133×** |
 | WikiText-2 perplexity | 96.8243 ± 3.55673 | 96.8243 ± 3.55673 | identical |
 
-Faster in 5 of 5 `llama-bench` invocations on both measures, load order
-alternated. **Measured on one AVX2 part without VNNI** — see the limitations,
+The two `t/s` columns are the output of a **single** `llama-bench` invocation —
+the fifth of five, `results/inference_t5b.txt:215`. The ratio column is the
+**median over all five**, which is the figure the paper quotes. The five were
+taken with the order the two models load in alternated, so neither can benefit
+from going first, and t5b is faster in 5 of 5 on both measures. Per invocation
+the ratios are 1.096, 1.112, 1.119, 1.253, 1.132 for `pp512` and 1.099, 1.133,
+1.123, 1.242, 1.143 for `tg128` — a spread wide enough that quoting any single
+one of them as the result, which an earlier draft did, is a choice rather than a
+measurement. **Measured on one AVX2 part without VNNI** — see the limitations,
 which lead the paper's §9 rather than closing it.
 
 ## Quick start

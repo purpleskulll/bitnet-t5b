@@ -1,0 +1,115 @@
+RECORD NOTE -- READ THIS FIRST (added 2026-09-14)
+==================================================================
+
+This file holds TWO runs of scripts/mutation_test.sh, concatenated, oldest
+first. The second one is the current result. Read that one.
+
+  SUPERSEDED   the 14-mutation run, ending "killed 12   survived 0".
+               It predates the column-blocked GEMM path, so it carries none
+               of that path's mutations, and its equivalence-proof block is
+               the short one. It ends at the banner on line 67.
+
+  CURRENT      the 21-mutation run, ending "killed 18   survived 0".
+               Same control (97529 checks, 0 failures), same compiler, same
+               flags. It adds SEVEN mutations aimed at the column-blocked
+               GEMM path -- six killed, one (magic 811 -> 812) proved
+               equivalent beforehand and correctly surviving -- and the
+               first-ACTUAL-failure table for the floor(x/81) magic. So
+               14 + 7 = 21 injected and 12 + 6 = 18 killed.
+               IT BEGINS AT LINE 68, at the second banner.
+
+The paper's "twenty-one defects are injected one at a time ... Eighteen are
+killed" (paper/arxiv.md, paper/bitnet-baremetal-t5b.tex) refers to the CURRENT
+block. A reader going top-down and stopping at the first "killed 12
+survived 0" gets the superseded count.
+
+The superseded run is kept rather than overwritten, because this project
+appends. It costs nothing to keep: all fourteen of its rows are reproduced
+character-for-character in the current run, same failure counts.
+
+==================================================================
+
+==================================================================
+ MUTATION TEST -- can the suite tell a broken kernel from a good one?
+==================================================================
+
+Reproduce:  scripts/mutation_test.sh
+Compiler:   gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Flags:      -O3 -mavx2 -mfma -march=native -Wall -std=c11
+
+control: unmutated suite PASSES (97529 checks, 0 failures)
+
+equivalence proofs, exhaustive over the whole input domain:
+  m4 811 vs 810: differ on 0 of 256 byte values  (and both equal floor(x/81))
+  vpsubb vs vpsubw over all 65,536 word lanes: differ on 0, low byte borrows on 0
+
+mutation                                                 class       verdict
+--------                                                 -----       -------
+magic m1 (floor x/3) off by one                          vector      killed (45533 failures)
+magic m2 (floor x/9) off by one                          vector      killed (41180 failures)
+magic m3 (floor x/27) off by one                         vector      killed (37376 failures)
+magic m4 (floor x/81): 811 -> 810                        equivalent  survived, as PROVED above
+t5b_triple computes 5y not 3y                            vector      killed (47906 failures)
+odd-byte view shifted 7 not 8                            vector      killed (44789 failures)
+low-byte mask 0x007F not 0x00FF                          vector      killed (41156 failures)
+digit subtract in words not bytes                        equivalent  survived, as PROVED above
+planes 4 and 3 read swapped activations                  vector      killed (21408 failures)
+packer digit weights 1,3,9,27,81 -> 1,3,9,27,80          shared      killed (46478 failures)
+packer digit weights base 4 not base 3                   shared      killed (51972 failures)
+four digits per byte instead of five                     shared      killed (43625 failures)
+accumulator fold at 13 blocks, past the int16 bound      shared      killed (19 failures)
+accumulator fold at 32 blocks, upstream's value          shared      killed (24 failures)
+
+  killed 12   survived 0   uncompilable 0
+
+  Every injected defect was caught, and every mutation that survived was
+  proved beforehand to be no defect. The check count is doing work.
+==================================================================
+==================================================================
+ MUTATION TEST -- can the suite tell a broken kernel from a good one?
+==================================================================
+
+Reproduce:  scripts/mutation_test.sh
+Compiler:   gcc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Flags:      -O3 -mavx2 -mfma -march=native -Wall -std=c11
+
+control: unmutated suite PASSES (97529 checks, 0 failures)
+
+equivalence proofs, exhaustive over the whole input domain:
+  m4 811 vs 810: differ on 0 of 256 byte values  (and both equal floor(x/81))
+  vpsubb vs vpsubw over all 65,536 word lanes: differ on 0, low byte borrows on 0
+  magic for floor(x/81), first ACTUAL failure vs the 242-byte bound:
+    M=810  first failure x=890   safe for every byte
+    M=811  first failure x=485   safe for every byte
+    M=812  first failure x=323   safe for every byte
+    M=813  first failure x=242   FAILS on a legal byte
+
+mutation                                                 class       verdict
+--------                                                 -----       -------
+magic m1 (floor x/3) off by one                          vector      killed (45533 failures)
+magic m2 (floor x/9) off by one                          vector      killed (41180 failures)
+magic m3 (floor x/27) off by one                         vector      killed (37376 failures)
+magic m4 (floor x/81): 811 -> 810                        equivalent  survived, as PROVED above
+t5b_triple computes 5y not 3y                            vector      killed (47906 failures)
+odd-byte view shifted 7 not 8                            vector      killed (44789 failures)
+low-byte mask 0x007F not 0x00FF                          vector      killed (41156 failures)
+digit subtract in words not bytes                        equivalent  survived, as PROVED above
+planes 4 and 3 read swapped activations                  vector      killed (21408 failures)
+packer digit weights 1,3,9,27,81 -> 1,3,9,27,80          shared      killed (46478 failures)
+packer digit weights base 4 not base 3                   shared      killed (51972 failures)
+four digits per byte instead of five                     shared      killed (43625 failures)
+accumulator fold at 13 blocks, past the int16 bound      shared      killed (19 failures)
+accumulator fold at 32 blocks, upstream's value          shared      killed (24 failures)
+gemm: column stride dropped, every column reads column 0 gemm        killed (47268 failures)
+gemm: digit plane k off by one                           gemm        killed (57717 failures)
+gemm: highest digit built from the wrong quotient        gemm        killed (40744 failures)
+gemm: lowest plane subtracts q2 instead of q1            gemm        killed (68085 failures)
+gemm: spread visits one column too few                   gemm        killed (21786 failures)
+gemm: magic 811 -> 812 (first failure 323, above every byte) equivalent  survived, as PROVED above
+gemm: magic 811 -> 813 (first failure 242, the largest legal byte) gemm        killed (24882 failures)
+
+  killed 18   survived 0   uncompilable 0
+
+  Every injected defect was caught, and every mutation that survived was
+  proved beforehand to be no defect. The check count is doing work.
+==================================================================

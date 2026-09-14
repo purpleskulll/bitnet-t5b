@@ -28,11 +28,27 @@ DEAD FFN NEURONS IN ggml-model-i2_s.gguf
 
     layers where ffn_gate's dead-row SET equals ffn_up's:  30 of 30
 
-    Not the same count -- the same INDICES. In a SwiGLU feed-forward
+    Not the same count -- the same INDICES. In a GATED feed-forward
     block gate and up are multiplied element-wise, so a dead gate row
     makes the matching up row irrelevant and the reverse. Training
     zeroed them together. ffn_down has none, which is the same fact
     from the other side: there a dead neuron is a COLUMN, not a row.
+
+    NOT SwiGLU, and the correction is recorded because this paragraph
+    said SwiGLU until 2026-09-14. This checkpoint gates with a SQUARED
+    RELU: the BitNet b1.58 2B4T technical report names squared ReLU in
+    place of SwiGLU, and the reference released with the checkpoint
+    computes  inner = self.ffn_sub_norm(squared_relu(x1) * x3).
+    results/activation_mismatch.txt
+
+    NO NUMBER IN THIS FILE MOVES, and the reason is structural rather
+    than lucky. Section 4 already carries it: the pairing result holds
+    for ANY activation f, because h_i = f(gate_i) * up_i = f(0) * 0 = 0
+    whatever f is. Everything in sections 1, 3 and 5 is counted off the
+    stored weights and never evaluates an activation at all. What the
+    name was doing here was explaining WHY a dead gate row and a dead
+    up row travel together, and an element-wise gate explains that
+    without naming which nonlinearity sits on the gate branch.
 
 3. THEY ARE CONCENTRATED IN THE EARLY LAYERS
 --------------------------------------------------------------------------

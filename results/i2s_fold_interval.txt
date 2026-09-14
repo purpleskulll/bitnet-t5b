@@ -1,0 +1,72 @@
+==================================================================
+ THE SHIPPING i2_s KERNEL FOLDS TEN TIMES MORE OFTEN THAN IT MUST
+==================================================================
+
+  Reproduce: scripts/build_insitu.sh, then a second tree configured with
+             -DBITNET_FOLD10, and llama-bench on the i2_s model. The
+             correctness check is llama-perplexity on the same corpus.
+
+  THE BOUND, computed from the kernel's own operands. tinyBLAS_I2S_AVX feeds
+  vpmaddubsw with RAW 2-bit codes (0..3, unsigned) against int8 activations, so
+  one int16 lane holds at most 2 * 3 * 127 = 762 per vpmaddubsw and at most
+  4 * 762 = 3048 per 128-weight block. The int16 ceiling is 32767, so
+
+      floor(32767 / 3048) = 10 blocks may be accumulated before folding.
+
+  WHAT THE TWO KERNELS ACTUALLY DO
+
+      bitnet_vec_dot_i2_i8_s_reference   folds every 32 blocks
+      tinyBLAS_I2S_AVX (what dispatches) folds every  1 block
+      ternary_t5b_dot_avx2               folds every 12 blocks (its own bound
+                                         is 12 * 2560 = 30720 <= 32767)
+
+  The reference kernel's 32 is ABOVE its own safe limit of 10, and that is the
+  whole of the overflow section 7.1 measures: 32 * 3048 = 97536, three times
+  the ceiling. The shipping kernel's 1 is a factor of ten BELOW the limit, and
+  costs accordingly.
+
+  WHAT THE NINE OMITTED FOLDS COST. A tree identical but for accumulating ten
+  blocks in int16 before folding, three runs each, interleaved:
+
+      folding every block   10,254,922,296 cycles   (mean of 3)
+      folding every ten      9,488,166,828 cycles   (mean of 3)
+      difference                      7.5 %
+
+  Perplexity is IDENTICAL between the two builds -- 108.6810 +/- 13.55672 on
+  four chunks of WikiText-2 -- which is what makes this a cost and not a
+  trade-off.
+
+  WHAT THIS DOES AND DOES NOT SAY
+
+  It accounts for 7.5 of the roughly 25 % by which llama.cpp's dispatched i2_s
+  path is slower than t5b's (the measured ratio is 1.257). It does NOT account
+  for the rest, and it is not the explanation of that ratio -- it is one
+  component of it, measured rather than argued.
+
+  It is also NOT A PROPOSAL. The i2_s path is the control arm of every A/B this
+  project reports, and a result measured against a moved baseline is not a
+  result. The modified kernel lives in its own tree, is never built into the
+  binary any reported ratio uses, and exists to answer one question: how much
+  of the shipping path's cost is a fold interval that its own operand bound
+  does not require.
+
+  A reader who wants the upstream kernel faster has the answer here; this work
+  does not take it.
+
+  AND THE SAME ARITHMETIC WAS TURNED ON t5b, which is the point of computing a
+  bound rather than quoting one. Its digits are 0..2 against int8, so an int16
+  lane takes at most 2 * 2 * 127 = 508 per vpmaddubsw and 5 * 508 = 2540 per
+  160-weight block:
+
+      floor(32767 / 2540) = 12 blocks, and TERNARY_T5B_FOLD is 12.
+
+  It sits exactly at its limit, not below it, so there is no equivalent saving
+  to take. The header derives the same 12 from a slightly conservative 2560 per
+  block; both give 12, and the tighter figure changes nothing.
+
+  Two things were checked rather than assumed. The bound does NOT depend on K:
+  it is per block, and a lane never sees more than TERNARY_T5B_FOLD blocks
+  however long the row -- K = 6912 is 43 full blocks, folded in groups of 12.
+  And all THREE t5b paths use the same interval, the GEMM one per column
+  (ternary_t5b.c:289, :411, :719), so the blocking of columns does not weaken
+  it.

@@ -4,8 +4,12 @@
 #
 # WHY THIS EXISTS
 # ---------------
-# test_t5b reports 80,205 checks and test_t5s another 97,529, and the paper
-# quotes those totals. A check count is a measure of effort, not of power: the
+# test_t5b reports 97,529 checks and test_t10 another 80,205, and the paper
+# quotes the first of those. The two figures were printed here the wrong way
+# round, against a binary name -- test_t5s -- that the public tree does not
+# build at all; all three were corrected by running the suites and reading the
+# totals, not by copying the previous header.
+# A check count is a measure of effort, not of power: the
 # three most expensive mistakes in this project were all GREEN checks answering
 # the wrong question, and the standing rule that came out of them is to make a
 # check fail on purpose once before believing it.
@@ -39,10 +43,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # src_modifications/ with its suite under tests/; the public one has both in
 # src/. Locating beats assuming: this file is copied between the two, and a copy
 # that needs editing on arrival is a copy that drifts.
+#
+# THE SCRIPT'S OWN DIRECTORY IS ASKED FIRST, and the parent is not consulted to
+# decide. In the public tree this file sits at the clone's root, so `..` is the
+# clone's PARENT; the previous form reached its self/src branch only as a third
+# ELIF, after testing the parent. A clone with any directory named src/ beside
+# it therefore bound SRC to the NEIGHBOUR, and this script died reporting
+# "CONTROL FAILED: the unmutated tree does not build" -- which is false, and is
+# a worse outcome than a crash, because it accuses the kernel when the fault is
+# the path. Reproduced in a scratch tree, exit 2, with clone/src/ternary_t5b.c
+# present the whole time. A neighbour cannot be mistaken for the script's own
+# directory, so asking SELF first closes it.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -d "$SELF/src" ] || [ -d "$SELF/src_modifications" ]; then ROOT="$SELF"; fi
+
 if   [ -d "$ROOT/src_modifications" ]; then SRC="$ROOT/src_modifications"; TESTDIR="tests"
 elif [ -d "$ROOT/src" ];              then SRC="$ROOT/src";               TESTDIR="."
-elif [ -d "$(dirname "${BASH_SOURCE[0]}")/src" ]; then
-     ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; SRC="$ROOT/src"; TESTDIR="."
 else
      echo "mutation_test.sh: no kernel directory found (tried src_modifications/, src/)" >&2
      exit 2

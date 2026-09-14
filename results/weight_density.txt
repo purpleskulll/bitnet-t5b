@@ -1,24 +1,27 @@
 SPENDING 2.000 BITS ON A VALUE THAT CARRIES 1.585
 ==============================================================================
 
-  Reproduce:
-      make -C src_modifications build/obj/ggml_i2s_ternary.o \
-                                build/obj/ternary_t10.o
-      gcc -O3 -mavx2 -mfma -march=native -std=c11 -pthread \
-          src_modifications/bench/bench_token.c \
-          src_modifications/build/obj/ggml_i2s_ternary.o \
-          src_modifications/build/obj/ternary_t10.o \
-          -o src_modifications/build/bench_token
-      ./src_modifications/build/bench_token 4 3
-      ./src_modifications/build/bench_token 6 3
+  Reproduce, from a clone of this repository:
+      make i2s-ref              # bench_token compares against upstream's own
+                                # i2_s kernel, which is MIT-licensed upstream
+                                # code and is fetched, not redistributed here
+      make bench
+      ./build/bench_token 4 3
+      ./build/bench_token 6 3
+      taskset -c 5 ./build/bench_ports
 
-      gcc -O3 -mavx2 -march=native -std=c11 \
-          src_modifications/bench/bench_ports.c -o src_modifications/build/bench_ports
-      taskset -c 5 ./src_modifications/build/bench_ports
+  Without `make i2s-ref` the i2_s arm cannot be built and `make bench` SKIPS
+  bench_token with a message rather than silently exiting 0. bench_ports needs
+  no baseline and builds from a bare clone.
 
-  Correctness for the packing measured here: ./src_modifications/build/test_t10
-  (80,076 checks, 0 failures), and see results/thread_headroom.txt for the
-  budget this experiment was designed against.
+  Correctness for the packing measured here:
+      make test                 # builds and runs ./build/test_t10
+  80,076 checks, 0 failures. See results/thread_headroom.txt for the budget
+  this experiment was designed against.
+
+  (Private tree: the same sources are under src_modifications/, built by
+  `make -C src_modifications` into src_modifications/build/. Same code, same
+  flags -- these are the binaries the figures below were measured with.)
 
 
 1. THE QUESTION, AND WHY IT IS THE DESIGN DOCUMENT'S OWN

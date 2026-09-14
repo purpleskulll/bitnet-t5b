@@ -1,0 +1,168 @@
+==================================================================
+ THE THIRD DIGIT OF THE STATIC MODEL IS A PROPERTY OF THE
+ TRANSLATION UNIT, NOT OF THE TARGET
+==================================================================
+
+Reproduce:  see COMMANDS at the foot of this file
+Model:      llvm-mca 23.1.0 (~/.local/llvm/bin/llvm-mca), -iterations=2000
+Date:       2026-09-14
+Host:       AMD Ryzen 5 3600, gcc 13.3.0
+
+WHY THIS FILE EXISTS
+--------------------
+results/microarch_model.txt exists in two copies -- one in this tree, one in
+the public repository -- and they disagree:
+
+    target       this tree            public tree
+    znver3       3.76 / S 2.449       3.77 / S 2.441
+    znver4       3.76 / S 2.449       3.77 / S 2.441
+    znver5       3.76 / S 2.449       3.77 / S 2.441
+
+Both were committed once on 2026-09-07 and never edited since, so this is not
+a stale copy of one run: it is two runs that did not agree. A static model is
+supposed to be reproducible -- that is the entire reason the paper is allowed
+to quote it for hardware this project cannot rent. A static model that returns
+two answers is a claim about the instrument, and it has to be chased.
+
+FIRST: BOTH REPRODUCE TODAY, WITH THE SAME BINARY
+-------------------------------------------------
+Running scripts/microarch_model.sh in each tree on 2026-09-14, same llvm-mca
+23.1.0, same gcc:
+
+    this tree    znver3/4/5    3.76    S 2.449
+    public tree  znver3/4/5    3.77    S 2.441
+
+So neither file has rotted. The difference is live and it is deterministic --
+which makes it findable.
+
+IT IS NOT THE t5b KERNEL
+------------------------
+    md5sum src_modifications/ternary_t5b.c  ../bitnet-t5b/src/ternary_t5b.c
+    a331b8cac506f9831637b63c848e787d   (both)
+    md5sum src_modifications/ternary_t5b.h  ../bitnet-t5b/src/ternary_t5b.h
+    2968e0340ba7e0484507698594216fc3   (both)
+
+Byte-identical. And the t5b column agrees in both copies at 11.51 cycles. The
+whole disagreement sits in the i2_s column, which is the DENOMINATOR of S.
+
+IT IS THE i2_s TRANSLATION UNIT
+-------------------------------
+The script models whichever i2_s reference its own tree holds, and the two
+trees hold different files under the same function name:
+
+    src_modifications/ggml_i2s_ternary.c    12858 bytes   7 declarations
+        275 vector instructions emitted, 21 vpmaddubsw
+        -- a VERBATIM TRANSCRIPTION of upstream's AVX2 branch, plus this
+           project's counters, a scalar reference and a sum helper
+
+    ../bitnet-t5b/src/ggml_i2s_ternary.c     7196 bytes   4 declarations
+        61 vector instructions emitted, 8 vpmaddubsw
+        -- a thin WRAPPER around the upstream source that
+           tools/fetch_i2s_reference.sh downloads
+
+Different amounts of surrounding code in the same compilation unit. That is
+the only difference in the inputs.
+
+THE LOOPS ARE THE SAME TWENTY INSTRUCTIONS
+------------------------------------------
+Extracted with the script's OWN awk (the shortest backward-branch span
+containing a contraction), from each tree's emitted assembly:
+
+    loop_priv.s   20 instructions   4 vpmaddubsw
+    loop_pub.s    20 instructions   4 vpmaddubsw
+
+    diff of the opcode multiset              IDENTICAL
+    diff of the memory operands on %rax      IDENTICAL  (0, 32, 64, 96)
+    diff of the instruction text             DIFFERS
+
+What differs is register allocation and instruction ORDER, and nothing else.
+Side by side, the first four lines:
+
+    this tree                        public tree
+    vmovdqu  (%r15), %ymm9           vmovdqu  (%rdx), %ymm5
+    addq     $32, %r15               addq     $32, %rdx
+    vpsrlw   $2, %ymm9, %ymm5        vpsrlw   $2, %ymm5, %ymm6
+    vpsrlw   $4, %ymm9, %ymm0        vpsrlw   $4, %ymm5, %ymm8
+
+Same work. The register pressure of the enclosing translation unit changed
+which registers were free and in what order gcc scheduled the shifts and the
+four contractions.
+
+WHAT THE MODEL CHARGES FOR THAT REORDERING
+------------------------------------------
+llvm-mca on the two extracted loops directly -- no other code in scope, so the
+reordering is the only variable left:
+
+    target              this tree      public tree     delta
+    znver2                5.7620         5.7620       +0.0000
+    znver3                3.7615         3.7740       +0.0125
+    znver4                3.7615         3.7740       +0.0125
+    znver5                3.7615         3.7740       +0.0125
+    icelake-server        5.3440         5.3440       +0.0000
+    sapphirerapids        5.0120         5.0120       +0.0000
+
+That reproduces the whole disagreement, from the twenty instructions alone.
+The isolation is complete: nothing outside the loop is needed to explain it.
+
+INTERNAL CONTROL, and it is what makes this a result rather than noise.
+Three of the six targets return EXACTLY zero difference, to four decimals.
+The tool is deterministic and the effect is specific to the Zen 3 and later
+scheduler model, which is the one that executes 256-bit integer operations
+natively and therefore has the port pressure to be sensitive to order at all.
+Zen 2 splits every one into two 128-bit uops and saturates regardless; the two
+Intel models likewise show nothing. A difference that appeared on all six
+would have been a bug in my extraction.
+
+HOW BIG IT IS
+-------------
+    S = (t5b cycles / 160) / (i2_s cycles / 128)
+
+    3.7615 -> S = 2.4480
+    3.7740 -> S = 2.4399
+    difference 0.0081, which is 0.33 per cent of S
+
+WHAT THIS DOES AND DOES NOT TOUCH
+---------------------------------
+IT TOUCHES: the third significant digit of every cell in
+results/microarch_model.txt. Quoting that table to three decimals implies a
+precision the instrument does not have. The honest reading is two.
+
+IT DOES NOT TOUCH the claim the table is actually used for. The paper uses it
+one-sidedly -- that S does not run away on parts newer than this host -- across
+a spread of 2.10 to 2.50. An 0.33 per cent wobble is two orders of magnitude
+below that spread and cannot change its sign or its conclusion.
+
+IT DOES NOT MAKE ONE COPY RIGHT AND THE OTHER WRONG. Both are what the script
+emits in their own tree, from the reference each tree holds. The public tree's
+number is arguably the better one, because its i2_s comes from the file
+fetch_i2s_reference.sh downloads rather than from a transcription -- but that
+is an argument about which SOURCE to model, not about which RUN was correct.
+
+A FALSIFIABLE CONSEQUENCE, for whoever doubts this: pad the public translation
+unit with unrelated vector code until its register pressure matches this
+tree's, and znver3 should move from 3.7740 back toward 3.7615. If it does not,
+this explanation is wrong.
+
+COMMANDS
+--------
+    P=/home/matrix/projects/bitnet-baremetal
+    Q=/home/matrix/projects/bitnet-t5b
+    cd "$(mktemp -d)"
+    gcc -O3 -mavx2 -mfma -std=c11 -S -o priv.s "$P/src_modifications/ggml_i2s_ternary.c"
+    gcc -O3 -mavx2 -mfma -std=c11 -S -o pub.s  "$Q/src/ggml_i2s_ternary.c"
+
+    # the script's own extractor; see extract_loop() in scripts/microarch_model.sh
+    # for the awk, applied to symbol bitnet_vec_dot_i2_i8_s_reference
+
+    diff <(awk '{print $1}' loop_priv.s | sort | uniq -c) \
+         <(awk '{print $1}' loop_pub.s  | sort | uniq -c)      # identical
+    diff <(grep -o '[0-9]*(%rax)' loop_priv.s | sort) \
+         <(grep -o '[0-9]*(%rax)' loop_pub.s  | sort)          # identical
+
+    for t in znver2 znver3 znver4 znver5 icelake-server sapphirerapids; do
+      for f in loop_priv.s loop_pub.s; do
+        ~/.local/llvm/bin/llvm-mca -mtriple=x86_64-unknown-linux-gnu \
+          -mcpu=$t -iterations=2000 $f \
+          | awk -v t=$t -v f=$f '/^Total Cycles:/{printf "%-16s %-12s %.4f\n", t, f, $3/2000}'
+      done
+    done

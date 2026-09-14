@@ -1,0 +1,48 @@
+NOTE ADDED 2026-09-13. This is the FIVE-round run of the build that carries the
+per-phase probes inside tinyBLAS_I2S_AVX, not the nine-round run the paper's
+section 7.4 quotes. Its ratio is 1.379 against that run's 1.257, and the
+difference is the probes themselves: they sit on the i2_s arm only and fire per
+tile, inflating the arm they measure by about 10 percent. That is why the
+shipped measurement puts them behind -DBITNET_I2S_PHASES and why the numbers in
+the paper come from the build without them (results/insitu_symmetric.txt).
+
+This file overwrote that one in commit fc0d2a6 and the nine-round data was
+recovered from blob 3156e85 to restore it. Kept here under its own name so the
+two runs cannot be confused again.
+
+==================================================================
+ IN-SITU MATMUL TIME, BOTH ARMS MEASURED
+==================================================================
+
+  binary   /home/matrix/projects/bitnet-baremetal/.verify/insitu/build/bin/llama-bench
+  probe    bitnet_sgemm_cycles_add, present in libggml-cpu.so
+  threads  4      tokens 64      rounds 5 (interleaved)
+  host     load 3.89 3.93 3.63
+
+  round       i2_s cycles       t5b cycles   i2_s t/s    t5b t/s    ratio
+  1           22268074896      15719433697      20.11      23.87   1.4166
+  2           24379146324      17922314304      17.90      20.96   1.3603
+  3           23599579572      17591769468      18.87      19.72   1.3415
+  4           21973710168      15938780760      20.36      22.79   1.3786
+  5           22632234840      15530244198      19.67      24.18   1.4573
+
+  median ratio  i2_s matmul / t5b matmul   : 1.379
+  mean                                     : 1.391
+  min / max                                : 1.341 / 1.457
+  rounds with i2_s slower                  : 5 of 5
+
+  mean matmul time per token, wall clock:
+    i2_s    24.92 ms      t5b    17.95 ms
+
+
+  READ: §7.4 previously DERIVED these two matmul times by differencing
+  two separate llama-bench runs, and reported 21.18 ms for i2_s against
+  16.70 for t5b -- a ratio of 1.268. Both numbers above are measured, at
+  the same dispatch site by the same probe, so the ratio is a quotient of
+  two measurements and the dispatch cost is common to both and cancels.
+  The derived figures survive the check.
+
+  It is NOT the same quantity as the isolated S = 2.43 of the kernel
+  microbenchmark: that compares the reference vec_dot against t5b with
+  memory removed, this compares the paths llama.cpp actually dispatches
+  at the model's real shapes and thread count.

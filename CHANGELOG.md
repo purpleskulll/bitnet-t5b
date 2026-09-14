@@ -1,6 +1,6 @@
 # Corrections made during preparation
 
-Twenty-three claims in earlier drafts of the paper were wrong and were corrected before
+Twenty-nine claims in earlier drafts of the paper were wrong and were corrected before
 submission. They live here rather than in the paper so that the paper states
 what holds and this states how it got there — the change a reviewer asked for
 after counting seven "an earlier draft claimed" passages scattered through
@@ -350,6 +350,78 @@ depth-one decode is one "upstream has only on NEON", which upstream's own
 four-element AVX2 tail falsifies. It never said the cheaper decode is off by
 default. And its availability section promised that "each figure above is
 recomputed by a named script" while naming none. All five corrected.
+
+**24. "No file records that 19.7" — two do, and one of them ships.**
+The microarchitecture section calibrated its static model by observing that the
+measured 19.7 cycles per block appears nowhere, so the figure implied by the
+paper's own two constants, 18.54, should be used instead. The 18.54 is right and
+the negative existence claim was false: `src/ternary_t5b.c` states 19.7 twice in
+the header comment a reader of the public tree opens first, and
+`results/shufdig_measurement.txt` backs an issue rate out of it. Corrected to
+say 19.7 is recorded but not derived, and the two issue rates that follow from
+the two cycle counts — 2.18 against 2.32, 2.30 against 2.45 — are now named
+together instead of appearing in different sections as one quantity with two
+values.
+*Found by reading the evidence files against each other rather than against the
+paper. No check compared a shipped comment to a claim, and none does now either.*
+
+**25. Four figures the paper's own text contradicted.**
+The abstract called the arithmetic ratio "stable across Zen 3/4/5, Ice Lake and
+Sapphire Rapids" where §8 declines exactly that — the three Zen targets return
+identical counts, so the table holds four predictions and not six, and what is
+supported is one-sided. A subsection heading and the conclusion quoted 14 %,
+which is the fifth of five `llama-bench` invocations, two pages after the paper
+says in its own words that quoting a single one "is a choice rather than a
+measurement"; the medians are 11.9 % and 13.3 %. The availability section
+promised "all four benchmarks" build from a clone where the repository ships
+eight and three of them need a fetched reference. And a mutation paragraph said
+"six aimed at the GEMM path" then "one of the six", where the file lists seven
+and the sentence that follows discusses a decode mutant. All four corrected.
+
+**26. The four-thread verdict was stated three incompatible ways.**
+§5 said the condition is satisfied only at six threads and the code "should lose
+at four"; §7 showed it holds at four in situ; §7.6 said it "failed at one to
+four threads and still fails"; the conclusion said it "holds from four cores
+upward". Only the conclusion had absorbed the resolution — that the $S=2.43$ of
+the replay is measured against the *reference* kernel while the path
+`llama.cpp` dispatches is about 1.6x slower, which is what changes the sign of
+that one cell. Every site now names which $S$ it argues from. No number moved;
+the paper had been saying two true things in a way that read as one false one.
+*Found by reading the whole document in sequence after thirty edits that had each
+been checked alone.*
+
+**27. "In a SwiGLU block" — this checkpoint is not one, as the paper says three
+pages later.**
+The dead-neuron section explained the gate/up index coincidence through a SwiGLU
+block while §9 quotes the technical report saying the model uses squared ReLU
+"instead of the commonly used SwiGLU activation". No number moves — the evidence
+file already proves the result for any activation $f$ — but the paper
+contradicted itself, and the same wrong label was in
+`results/dead_neurons.txt`. Both corrected to a gated block with $f$ named.
+
+**28. The third digit of the microarchitecture table is not a property of the
+target.**
+Not a wrong claim but a missing limitation, and it surfaced because the two
+copies of `results/microarch_model.txt` disagreed: the public tree printed 3.77
+and $S=2.441$ for the three Zen targets where this one printed 3.76 and 2.449.
+Both reproduce today on the same `llvm-mca`. The cause is the translation unit,
+not the target — the two `i2_s` inner loops are twenty instructions each with an
+identical opcode multiset and identical memory offsets, differing only in
+register allocation and order, which the model prices at 0.01 cycles on
+znver3/4/5 and at exactly zero on the other three. Those three zeros are its
+control. The effect is 0.33 % on $S$, two orders below the 2.10–2.50 spread the
+table is cited for, and it is now stated beside the table.
+`results/microarch_translation_unit.txt` isolates it.
+
+**29. A gate that could not fail, shipped for a day.**
+`tools/check_short_parity.py` returned 0 with the message "not present --
+skipping" when the short paper was absent — and the short paper was not in the
+public tree at all, so in the repository a reader clones, the gate had never
+once run. It now returns 1, `scripts/sync_public.sh` ships the pair together,
+and the page counts both documents quoted are read from the build logs rather
+than asserted, because that number had already drifted twice in one day.
+*This is the failure this list's own preamble describes. It was introduced by the
+commit that added the short paper and found by auditing a cold clone.*
 
 ---
 
