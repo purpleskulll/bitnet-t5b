@@ -45,7 +45,11 @@ abstract: |
   builds this architecture's feed-forward block with `SiLU` where the
   checkpoint declares squared ReLU: supplying the declared activation moves
   perplexity over the same tokens from 96.8243 to 16.7482, a factor of
-  5.78, and the bit-identity above holds under both. All
+  5.78, and the bit-identity above holds under both. That it is the loader
+  and not the encoding is what the reproduction shows: on upstream
+  `llama.cpp` at `TQ1_0` the same pair reads 96.6913 against
+  16.7750, so the effect holds to better than 0.2% across
+  three quantisations and two trees whose only shared component is the graph. All
   results are from a single AVX2 microarchitecture *without* VNNI. Two
   independent runs bound that limitation: a static pipeline model, calibrated
   against the host to 3.0%, puts the arithmetic ratio at or below

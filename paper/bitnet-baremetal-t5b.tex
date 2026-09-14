@@ -105,7 +105,11 @@ and as a property of the loader rather than of either format, \code{llama.cpp}
 builds this architecture's feed-forward block with \code{SiLU} where the
 checkpoint declares squared ReLU: supplying the declared activation moves
 perplexity over the same tokens from \num{96.8243} to \num{16.7482}, a factor of
-\num{5.78}, and the bit-identity above holds under both. All
+\num{5.78}, and the bit-identity above holds under both. That it is the loader
+and not the encoding is what the reproduction shows: on upstream
+\code{llama.cpp} at \code{TQ1\_0} the same pair reads \num{96.6913} against
+\num{16.7750}, so the effect holds to better than \SI{0.2}{\percent} across
+three quantisations and two trees whose only shared component is the graph. All
 results are from a single AVX2 microarchitecture \emph{without} VNNI. Two
 independent runs bound that limitation: a static pipeline model, calibrated
 against the host to \SI{3.0}{\percent}, puts the arithmetic ratio at or below
