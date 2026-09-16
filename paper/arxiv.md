@@ -996,7 +996,8 @@ than a measurement.
 prediction; the contradiction is now resolved, and the prediction was right.**
 From $S=2.43$ and $\Sigma_4=1.86$, (17) predicts a
 loss at four threads and the isolated replay of §7.3 delivers one
-($0.780\times$); the model gains $1.132\times$. Instrumenting the glue with a
+($0.780\times$); the model gains $1.119\times$, the median over five
+invocations. Instrumenting the glue with a
 cycle counter --- `rdtsc` at the invariant TSC rate of
 3.599978 GHz, not the core clock, with `llama-bench`'s untimed
 warmup removed by differencing $r=2$ against $r=10$ --- gives the matmul time

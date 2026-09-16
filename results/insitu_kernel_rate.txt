@@ -20,6 +20,13 @@ RESOLVING THE FOUR-THREAD CONTRADICTION: THE IN-SITU KERNEL RATE
   agrees and gives 0.780x. The model does not: at four threads it gains 1.132x
   on prompt and 1.143x on generation.
 
+  [CORRECTED 2026-09-16: those two are invocation 5 of five, not the result.
+   The medians are 1.119x on prompt and 1.133x on generation -- see
+   results/inference_t5b.txt:211-217 for all five. The sign of the
+   contradiction is unaffected, which is what this section is about: every
+   one of the five gains, against a predicted loss. The figures above are
+   left in place because they are what this run recorded.]
+
   Something between the isolated kernels and the model changes the sign. Two
   candidates were recorded and neither was measured:
 
