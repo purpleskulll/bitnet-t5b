@@ -1,5 +1,7 @@
 # bitnet-t5b — ternary weights at 1.600 bits, decoded arithmetically
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22757498.svg)](https://doi.org/10.5281/zenodo.22757498)
+
 Supporting code and evidence for *Sub-Two-Bit Ternary Weight Storage with
 Table-Free Arithmetic Decoding for CPU Inference* (`paper/`).
 
@@ -249,6 +251,28 @@ implementation — so an absence has to be asserted rather than merely tolerated
    which is why the headline is a five-invocation replication.
 4. **The type identifier (43) is not reserved upstream**, so a stock
    `llama.cpp` cannot read a t5b file.
+
+## Citation
+
+Archived at Zenodo: [10.5281/zenodo.22757498](https://doi.org/10.5281/zenodo.22757498).
+Author ORCID: [0009-0007-2455-3581](https://orcid.org/0009-0007-2455-3581).
+
+```bibtex
+@software{theile2026t5b,
+  author  = {Theile, Justus},
+  title   = {Sub-Two-Bit Ternary Weight Storage with Table-Free
+             Arithmetic Decoding for CPU Inference},
+  year    = {2026},
+  doi     = {10.5281/zenodo.22757498},
+  url     = {https://doi.org/10.5281/zenodo.22757498},
+  orcid   = {0009-0007-2455-3581},
+  note    = {Code, evidence files and consistency checks:
+             https://github.com/purpleskulll/bitnet-t5b}
+}
+```
+
+The DOI resolves to the archived snapshot, so it cites a fixed state of this
+repository rather than whatever `main` happens to hold.
 
 ## Licence
 
