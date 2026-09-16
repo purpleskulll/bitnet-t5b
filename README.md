@@ -1,6 +1,10 @@
 # bitnet-t5b — ternary weights at 1.600 bits, decoded arithmetically
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22757498.svg)](https://doi.org/10.5281/zenodo.22757498)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22757497.svg)](https://doi.org/10.5281/zenodo.22757497)
+
+That is the *concept* DOI: it always resolves to the newest release. Each
+individual version also has its own DOI, so cite the concept DOI for "this work"
+and a version DOI when a claim depends on one specific snapshot.
 
 Supporting code and evidence for *Sub-Two-Bit Ternary Weight Storage with
 Table-Free Arithmetic Decoding for CPU Inference* (`paper/`).
@@ -254,7 +258,7 @@ implementation — so an absence has to be asserted rather than merely tolerated
 
 ## Citation
 
-Archived at Zenodo: [10.5281/zenodo.22757498](https://doi.org/10.5281/zenodo.22757498).
+Archived at Zenodo: [10.5281/zenodo.22757497](https://doi.org/10.5281/zenodo.22757497).
 Author ORCID: [0009-0007-2455-3581](https://orcid.org/0009-0007-2455-3581).
 
 ```bibtex
@@ -263,16 +267,19 @@ Author ORCID: [0009-0007-2455-3581](https://orcid.org/0009-0007-2455-3581).
   title   = {Sub-Two-Bit Ternary Weight Storage with Table-Free
              Arithmetic Decoding for CPU Inference},
   year    = {2026},
-  doi     = {10.5281/zenodo.22757498},
-  url     = {https://doi.org/10.5281/zenodo.22757498},
+  doi     = {10.5281/zenodo.22757497},
+  url     = {https://doi.org/10.5281/zenodo.22757497},
   orcid   = {0009-0007-2455-3581},
   note    = {Code, evidence files and consistency checks:
              https://github.com/purpleskulll/bitnet-t5b}
 }
 ```
 
-The DOI resolves to the archived snapshot, so it cites a fixed state of this
-repository rather than whatever `main` happens to hold.
+The DOI above is the concept DOI and tracks the newest release, so it cites the
+work rather than one snapshot of it. That is the right default, but it means the
+target moves: if a claim depends on a particular state — a figure that a later
+release corrects, say — cite that release's own version DOI instead, which
+Zenodo shows on the record for each one.
 
 ## Licence
 
