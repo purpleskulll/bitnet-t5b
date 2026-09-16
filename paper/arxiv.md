@@ -147,7 +147,7 @@ a new quantisation scheme, and it composes with all three.
 It is also not a cache format, and that boundary is where the largest remaining
 memory sits. §7.5 measures the part of a token this work does not
 touch at 21.6 ms, the larger half, and the key/value cache
-lives entirely inside it. Hariri et al. [kvkeys] act on that half rather
+lives entirely inside it. Hariri et al. [spectralkv] act on that half rather
 than this one: they derive from the spectral and Frobenius norms of the key and
 value projections that keys deserve more bits than values, and allocate four and
 two, keeping up to 98.3% of a uniform allocation's accuracy at
@@ -1214,7 +1214,7 @@ argument is wrong: t5b does *not* leave the attention tensors alone. All
 (`results/tensor_structure.txt`). What it leaves alone is the cache, which
 holds activations and never weights.
 
-Hariri et al. [kvkeys] act on exactly that half. They show the key
+Hariri et al. [spectralkv] act on exactly that half. They show the key
 projections carry larger spectral and Frobenius norms than the value
 projections, and allocate bits accordingly --- four to keys, two to values ---
 retaining up to 98.3% of the accuracy of a uniform allocation at

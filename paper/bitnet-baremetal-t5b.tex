@@ -204,7 +204,7 @@ a new quantisation scheme, and it composes with all three.
 It is also not a cache format, and that boundary is where the largest remaining
 memory sits. \S\ref{sec:ratios} measures the part of a token this work does not
 touch at \SI{21.6}{\milli\second}, the larger half, and the key/value cache
-lives entirely inside it. Hariri et al.~\cite{kvkeys} act on that half rather
+lives entirely inside it. Hariri et al.~\cite{spectralkv} act on that half rather
 than this one: they derive from the spectral and Frobenius norms of the key and
 value projections that keys deserve more bits than values, and allocate four and
 two, keeping up to \SI{98.3}{\percent} of a uniform allocation's accuracy at
@@ -1294,7 +1294,7 @@ argument is wrong: t5b does \emph{not} leave the attention tensors alone. All
 (\code{results/tensor\_structure.txt}). What it leaves alone is the cache, which
 holds activations and never weights.
 
-Hariri et al.~\cite{kvkeys} act on exactly that half. They show the key
+Hariri et al.~\cite{spectralkv} act on exactly that half. They show the key
 projections carry larger spectral and Frobenius norms than the value
 projections, and allocate bits accordingly --- four to keys, two to values ---
 retaining up to \SI{98.3}{\percent} of the accuracy of a uniform allocation at
@@ -2154,7 +2154,7 @@ zero.
   D.~Wu. \emph{Sherry: Hardware-Efficient 1.25-Bit Ternary Quantization via
   Fine-grained Sparsification}. arXiv:2601.07892, 2026.
 
-\bibitem{kvkeys} M.~Hariri, A.~Luo, W.~Chen, T.~Zhang, Q.~Wang, X.~Han,
+\bibitem{spectralkv} M.~Hariri, A.~Luo, W.~Chen, T.~Zhang, Q.~Wang, X.~Han,
   V.~Chaudhary. \emph{Quantize What Counts: More for Keys, Less for Values}.
   Findings of the Association for Computational Linguistics: ACL 2026,
   pp.~26393--26420.
